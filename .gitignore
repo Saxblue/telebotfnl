@@ -1,0 +1,39 @@
+# Environment variables - GİZLİ BİLGİLER
+.env
+.env.local
+.env.production
+.env.backup*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Logs
+*.log
+logs.json
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Sensitive data
+config.json
+secrets.json
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

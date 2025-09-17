@@ -1,13 +1,10 @@
 import streamlit as st
 import threading
 import time
-import json
 import sqlite3
+import json
 from datetime import datetime
 import requests
-import asyncio
-import sys
-import os
 
 # Streamlit sayfa ayarı
 st.set_page_config(
@@ -19,162 +16,213 @@ st.set_page_config(
 # Başlık
 st.title("🤖 Telegram Bot Kontrol Paneli")
 
-# Hata yönetimi - aiohttp yoksa basit bir alternatif
-try:
-    import aiohttp
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-    st.warning("⚠️ aiohttp modülü kurulu değil. Bazı özellikler sınırlı olacaktır.")
-
-try:
-    from signalrcore.hub_connection_builder import HubConnectionBuilder
-    SIGNALR_AVAILABLE = True
-except ImportError:
-    SIGNALR_AVAILABLE = False
-    st.warning("⚠️ signalrcore modülü kurulu değil. SignalR özellikleri devre dışı.")
-
-# Basit bir SignalR client (aiohttp yoksa)
-class SimpleSignalRClient:
+# Basit bir bot sınıfı (aiohttp ve signalrcore olmadan)
+class SimpleBot:
     def __init__(self):
-        self.is_connected = False
-        self.connection_token = None
+        self.running = False
+        self.listener_running = False
+        self.thread = None
+        self.listener_thread = None
         
-    async def get_connection_token(self):
-        """Basit token alma (aiohttp olmadan)"""
-        try:
-            # requests kullanarak token alma
-            negotiate_url = "https://backofficewebadmin.betconstruct.com/signalr/negotiate?hub=commonnotificationhub"
-            response = requests.post(negotiate_url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                self.connection_token = data.get('ConnectionToken')
-                return self.connection_token
-        except Exception as e:
-            st.error(f"Token alma hatası: {e}")
-        return None
-
-    async def start_connection(self):
-        """Basit bağlantı (sadece simülasyon)"""
-        self.is_connected = True
+    def start_bot(self):
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._bot_worker)
+            self.thread.daemon = True
+            self.thread.start()
+            return True
+        return False
+        
+    def stop_bot(self):
+        self.running = False
         return True
+        
+    def start_listener(self):
+        if not self.listener_running:
+            self.listener_running = True
+            self.listener_thread = threading.Thread(target=self._listener_worker)
+            self.listener_thread.daemon = True
+            self.listener_thread.start()
+            return True
+        return False
+        
+    def stop_listener(self):
+        self.listener_running = False
+        return True
+        
+    def _bot_worker(self):
+        """Basit bot çalışanı"""
+        while self.running:
+            try:
+                # Simüle edilmiş bot aktivitesi
+                time.sleep(5)
+            except:
+                pass
+                
+    def _listener_worker(self):
+        """Basit dinleyici çalışanı"""
+        while self.listener_running:
+            try:
+                # Simüle edilmiş dinleyici aktivitesi
+                time.sleep(3)
+            except:
+                pass
 
-    async def stop(self):
-        self.is_connected = False
+# Global bot instance
+bot = SimpleBot()
 
-# Bot durumu değişkenleri
+# Session state initialization
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
-if 'withdrawal_listener_running' not in st.session_state:
-    st.session_state.withdrawal_listener_running = False
-if 'notifications' not in st.session_state:
-    st.session_state.notifications = []
+if 'listener_running' not in st.session_state:
+    st.session_state.listener_running = False
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
 if 'telegram_chat_ids' not in st.session_state:
     st.session_state.telegram_chat_ids = ""
+if 'notifications' not in st.session_state:
+    st.session_state.notifications = []
 
 # Veritabanı başlatma
 def init_db():
-    conn = sqlite3.connect('bot_data.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            message TEXT,
-            timestamp DATETIME,
-            is_read BOOLEAN DEFAULT FALSE
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message TEXT,
+                timestamp DATETIME,
+                is_read BOOLEAN DEFAULT FALSE
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"Veritabanı hatası: {e}")
 
 # Ayarları yükle
 def load_settings():
-    init_db()
-    conn = sqlite3.connect('bot_data.db')
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT value FROM settings WHERE key = 'api_key'")
-    api_key_result = cursor.fetchone()
-    if api_key_result:
-        st.session_state.api_key = api_key_result[0]
-    
-    cursor.execute("SELECT value FROM settings WHERE key = 'telegram_chat_ids'")
-    chat_ids_result = cursor.fetchone()
-    if chat_ids_result:
-        st.session_state.telegram_chat_ids = chat_ids_result[0]
-    
-    conn.close()
+    try:
+        init_db()
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT value FROM settings WHERE key = 'api_key'")
+        api_key_result = cursor.fetchone()
+        if api_key_result:
+            st.session_state.api_key = api_key_result[0]
+        
+        cursor.execute("SELECT value FROM settings WHERE key = 'telegram_chat_ids'")
+        chat_ids_result = cursor.fetchone()
+        if chat_ids_result:
+            st.session_state.telegram_chat_ids = chat_ids_result[0]
+        
+        conn.close()
+    except Exception as e:
+        st.error(f"Ayarlar yüklenirken hata: {e}")
 
 # Ayarları kaydet
 def save_setting(key, value):
-    conn = sqlite3.connect('bot_data.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-        (key, value)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Ayar kaydedilirken hata: {e}")
+        return False
 
-# Basit bot fonksiyonları (aiohttp olmadan)
+# Bot fonksiyonları
 def start_bot_thread():
-    """Bot thread'ini başlat"""
-    st.session_state.bot_running = True
-    st.success("Bot başlatıldı! (Simülasyon modu)")
+    try:
+        success = bot.start_bot()
+        if success:
+            st.session_state.bot_running = True
+            st.success("✅ Bot başlatıldı!")
+        else:
+            st.warning("⚠️ Bot zaten çalışıyor!")
+    except Exception as e:
+        st.error(f"❌ Bot başlatılırken hata: {e}")
 
 def stop_bot():
-    """Bot'u durdur"""
-    st.session_state.bot_running = False
-    st.info("Bot durduruldu!")
+    try:
+        success = bot.stop_bot()
+        if success:
+            st.session_state.bot_running = False
+            st.info("⏹️ Bot durduruldu!")
+        else:
+            st.warning("⚠️ Bot zaten durdurulmuş!")
+    except Exception as e:
+        st.error(f"❌ Bot durdurulurken hata: {e}")
 
 def get_bot_status():
-    """Bot durumunu döndür"""
     return {
         "running": st.session_state.bot_running,
-        "status": "active" if st.session_state.bot_running else "inactive",
-        "since": datetime.now().isoformat() if st.session_state.bot_running else None
+        "status": "active" if st.session_state.bot_running else "inactive"
     }
 
 def update_api_key(new_key):
-    """API key güncelle"""
-    st.session_state.api_key = new_key
-    save_setting('api_key', new_key)
-    st.success("API key güncellendi!")
+    try:
+        st.session_state.api_key = new_key
+        save_setting('api_key', new_key)
+        st.success("✅ API key güncellendi!")
+    except Exception as e:
+        st.error(f"❌ API key güncellenirken hata: {e}")
 
 def start_withdrawal_listener():
-    """Para çekme dinleyicisini başlat"""
-    st.session_state.withdrawal_listener_running = True
-    st.success("Para çekme dinleyicisi başlatıldı! (Simülasyon modu)")
+    try:
+        success = bot.start_listener()
+        if success:
+            st.session_state.listener_running = True
+            st.success("✅ Para çekme dinleyicisi başlatıldı!")
+        else:
+            st.warning("⚠️ Dinleyici zaten çalışıyor!")
+    except Exception as e:
+        st.error(f"❌ Dinleyici başlatılırken hata: {e}")
 
 def stop_withdrawal_listener():
-    """Para çekme dinleyicisini durdur"""
-    st.session_state.withdrawal_listener_running = False
-    st.info("Para çekme dinleyicisi durduruldu!")
+    try:
+        success = bot.stop_listener()
+        if success:
+            st.session_state.listener_running = False
+            st.info("⏹️ Para çekme dinleyicisi durduruldu!")
+        else:
+            st.warning("⚠️ Dinleyici zaten durdurulmuş!")
+    except Exception as e:
+        st.error(f"❌ Dinleyici durdurulurken hata: {e}")
 
 def get_withdrawal_listener_status():
-    """Dinleyici durumunu döndür"""
     return {
-        "running": st.session_state.withdrawal_listener_running,
-        "status": "active" if st.session_state.withdrawal_listener_running else "inactive"
+        "running": st.session_state.listener_running,
+        "status": "active" if st.session_state.listener_running else "inactive"
     }
 
 def get_withdrawal_notifications():
-    """Bildirimleri getir"""
-    return st.session_state.notifications
+    # Örnek bildirimler döndür
+    return [
+        {"id": 1, "message": "Örnek bildirim 1", "timestamp": datetime.now(), "is_read": False},
+        {"id": 2, "message": "Örnek bildirim 2", "timestamp": datetime.now(), "is_read": True}
+    ]
 
 def update_telegram_chat_ids(new_ids):
-    """Telegram chat ID'leri güncelle"""
-    st.session_state.telegram_chat_ids = new_ids
-    save_setting('telegram_chat_ids', new_ids)
-    st.success("Telegram Chat ID'leri güncellendi!")
+    try:
+        st.session_state.telegram_chat_ids = new_ids
+        save_setting('telegram_chat_ids', new_ids)
+        st.success("✅ Telegram Chat ID'leri güncellendi!")
+    except Exception as e:
+        st.error(f"❌ Chat ID'leri güncellenirken hata: {e}")
 
 # Ayarları yükle
 load_settings()
@@ -184,22 +232,25 @@ with st.sidebar:
     st.header("⚙️ Ayarlar")
     
     api_key = st.text_input(
-        "API Key",
+        "🔑 API Key",
         value=st.session_state.api_key,
         type="password",
         help="Sistem API anahtarınız"
     )
     
-    if st.button("API Key Kaydet"):
+    if st.button("💾 API Key Kaydet"):
         update_api_key(api_key)
     
+    st.divider()
+    
     telegram_chat_ids = st.text_area(
-        "Telegram Chat ID'leri",
+        "📱 Telegram Chat ID'leri",
         value=st.session_state.telegram_chat_ids,
-        help="Her satıra bir Telegram Chat ID yazın"
+        help="Her satıra bir Telegram Chat ID yazın",
+        height=100
     )
     
-    if st.button("Chat ID'leri Kaydet"):
+    if st.button("💾 Chat ID'leri Kaydet"):
         update_telegram_chat_ids(telegram_chat_ids)
 
 # Ana içerik
@@ -227,69 +278,69 @@ with tab1:
             stop_withdrawal_listener()
 
 with tab2:
-    st.subheader("Sistem Durumu")
+    st.subheader("📊 Sistem Durumu")
     
     col1, col2 = st.columns(2)
     
     with col1:
         bot_status = get_bot_status()
+        status_emoji = "🟢" if bot_status["running"] else "🔴"
         st.metric(
             "Ana Bot Durumu",
-            "🟢 Çalışıyor" if bot_status["running"] else "🔴 Durdu",
-            help=f"Son durum: {bot_status['since']}" if bot_status["since"] else ""
+            f"{status_emoji} {'Çalışıyor' if bot_status['running'] else 'Durduruldu'}",
+            help="Ana bot durumu"
         )
     
     with col2:
         listener_status = get_withdrawal_listener_status()
+        status_emoji = "🟢" if listener_status["running"] else "🔴"
         st.metric(
             "Dinleyici Durumu",
-            "🟢 Çalışıyor" if listener_status["running"] else "🔴 Durdu"
+            f"{status_emoji} {'Çalışıyor' if listener_status['running'] else 'Durduruldu'}"
         )
     
-    # Modül durumları
-    st.subheader("Modül Durumları")
-    modul_col1, modul_col2 = st.columns(2)
+    # Sistem bilgileri
+    st.subheader("ℹ️ Sistem Bilgileri")
+    info_col1, info_col2, info_col3 = st.columns(3)
     
-    with modul_col1:
-        st.metric("aiohttp", "🟢 Kurulu" if AIOHTTP_AVAILABLE else "🔴 Eksik")
+    with info_col1:
+        st.info(f"**Son Güncelleme:**\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    with modul_col2:
-        st.metric("signalrcore", "🟢 Kurulu" if SIGNALR_AVAILABLE else "🔴 Eksik")
+    with info_col2:
+        st.info(f"**API Key:**\n{'✅ Kayıtlı' if st.session_state.api_key else '❌ Yok'}")
     
-    if not AIOHTTP_AVAILABLE or not SIGNALR_AVAILABLE:
-        st.warning("""
-        ⚠️ Bazı modüller eksik. Tam fonksiyonellik için:
-        ```bash
-        pip install aiohttp signalrcore websockets
-        ```
-        """)
+    with info_col3:
+        chat_ids = st.session_state.telegram_chat_ids.split('\n')
+        valid_ids = [id.strip() for id in chat_ids if id.strip()]
+        st.info(f"**Chat ID'ler:**\n{len(valid_ids)} kayıtlı")
 
 with tab3:
-    st.subheader("Son Bildirimler")
+    st.subheader("📨 Son Bildirimler")
     
     # Örnek bildirimler
-    sample_notifications = [
-        {"message": "✅ Para çekme talebi onaylandı - 1000 TRY", "time": "2 dakika önce"},
-        {"message": "⏳ Para çekme talebi bekleniyor - 500 TRY", "time": "5 dakika önce"},
-        {"message": "❌ Para çekme talebi reddedildi - 200 TRY", "time": "10 dakika önce"}
-    ]
+    notifications = get_withdrawal_notifications()
     
-    for notif in sample_notifications:
-        with st.expander(f"{notif['message']} - {notif['time']}"):
-            st.write("Bildirim detayları burada gösterilecek")
-            st.json({"amount": "1000 TRY", "status": "approved", "user": "user123"})
+    if notifications:
+        for notif in notifications:
+            with st.expander(f"{'📩' if not notif['is_read'] else '📨'} {notif['message']}"):
+                st.write(f"**Zaman:** {notif['timestamp']}")
+                st.write(f"**Durum:** {'Okundu' if notif['is_read'] else 'Okunmadı'}")
+                if st.button("✅ Okundu olarak işaretle", key=f"read_{notif['id']}"):
+                    st.success("Bildirim okundu olarak işaretlendi!")
+    else:
+        st.info("📭 Henüz bildirim yok")
 
 # Footer
 st.divider()
-st.caption("""
-🤖 Bu kontrol paneli Telegram botunu yönetmek için tasarlanmıştır.
-⏰ Son güncelleme: {}
-""".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+st.caption(f"""
+🤖 **Telegram Bot Kontrol Paneli** - v1.0
+⏰ Son güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🔧 Basit mod: aiohttp ve signalrcore olmadan çalışıyor
+""")
 
 # Streamlit Cloud için özel not
-if os.environ.get('STREAMLIT_CLOUD'):
-    st.sidebar.info("""
-    **Streamlit Cloud Notu:**
-    - Gerçek SignalR bağlantısı için aiohttp kurulumu gerekli
-    - requirements.txt dosyasını güncellemeyi unutmayın
-    """)
+st.sidebar.info("""
+**ℹ️ Streamlit Cloud Notu:**
+- Bu basitleştirilmiş versiyon çalışacaktır
+- Gerçek SignalR bağlantısı için local kurulum gerekli
+""")

@@ -597,8 +597,10 @@ class WithdrawalListener:
                 self.is_running = False
                 return False
                 
-        def run_listener():
-            pass
+        except Exception as e:
+            self.log_message(f"❌ Withdrawal listener başlatma hatası: {str(e)}")
+            self.is_running = False
+            return False
             
     def stop(self):
         """Withdrawal listener'ı durdur"""

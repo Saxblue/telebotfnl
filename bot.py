@@ -69,6 +69,9 @@ class WithdrawalListener:
         self.deposit_check_thread = None
         self.last_processed_deposits = set()  # İşlenmiş yatırımları takip et
         
+        # API key'i hub access token olarak kullan
+        self.api_key = self.hub_access_token
+        
     def log_message(self, message):
         """Log mesajı"""
         logger.info(f"[WithdrawalListener] {message}")
@@ -224,6 +227,7 @@ class WithdrawalListener:
                 return
             
             self.log_message("🔍 Yatırım talepleri kontrol ediliyor...")
+            self.log_message(f"🔑 API Key: {self.api_key[:20]}..." if self.api_key else "❌ API Key yok!")
             
             # API çağrısı yap
             url = "https://backofficewebadmin.betconstruct.com/ApiRequest/GetClientDepositRequestsWithTotals"
@@ -242,6 +246,7 @@ class WithdrawalListener:
             
             self.log_message(f"📡 API çağrısı yapılıyor: {url}")
             self.log_message(f"📅 Tarih aralığı: {today}")
+            self.log_message(f"📋 Payload: {payload}")
             
             response = requests.post(url, json=payload, headers=headers, timeout=30)
             
@@ -322,6 +327,10 @@ class WithdrawalListener:
                 self.log_message(f"❌ Yatırım API hatası: {response.status_code}")
                 self.log_message(f"📄 Response: {response.text[:500]}")
                 
+                # 401 Unauthorized ise token sorunu
+                if response.status_code == 401:
+                    self.log_message("🔑 Token sorunu tespit edildi! Hub access token geçersiz olabilir.")
+                
         except Exception as e:
             self.log_message(f"❌ Yatırım kontrolü hatası: {str(e)}")
             import traceback
@@ -346,20 +355,15 @@ class WithdrawalListener:
                 if len(parts) > 1:
                     customer_note = parts[1].strip()
             
-            # Telegram mesajı oluştur (istenen şablon)
-            message = "🔔 Yeni yatırım talebi geldi!🔔\n"
-            message += f"👤 Müşteri: {client_name}\n"
-            message += f"🆔 Kullanıcı Adı: {client_login}\n"
-            
-            # BTag varsa ekle
-            if btag:
-                message += f"🏷️ B. Tag: {btag}\n"
-            
-            message += f"💰 Miktar: {amount:,.2f} {currency}\n"
+            # Telegram mesajı oluştur (istenen şablon - kopyalanabilir format)
+            message = f"""🔔 Yeni yatırım talebi 🔔 
+👤 Müşteri: {client_name}
+🆔 Kullanıcı Adı: {client_login}
+💰 Miktar: {amount:,.2f} {currency}"""
             
             # M.Notu varsa ekle
             if customer_note:
-                message += f"📝M.Notu: {customer_note}"
+                message += f"\n📝M.Notu: {customer_note}"
             
             # Telegram'a gönder
             self.send_telegram_notification(message)
@@ -388,6 +392,15 @@ class WithdrawalListener:
             
         except Exception as e:
             self.log_message(f"❌ Yatırım bildirimi işleme hatası: {str(e)}")
+
+    def test_deposit_check(self):
+        """Test için yatırım kontrolünü manuel çağır"""
+        self.log_message("🧪 TEST: Manuel yatırım kontrolü başlatılıyor...")
+        try:
+            self.check_deposit_requests()
+            self.log_message("✅ TEST: Manuel yatırım kontrolü tamamlandı")
+        except Exception as e:
+            self.log_message(f"❌ TEST: Manuel yatırım kontrolü hatası: {str(e)}")
 
     def start_deposit_check_thread(self):
         """Yatırım kontrol thread'ini başlat"""

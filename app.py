@@ -513,26 +513,26 @@ def main():
             else:
                 st.warning("Yeni bir token girin!")
         
-        # Cookie
+        # Connection Token
         current_cookie = os.getenv('WITHDRAWAL_COOKIE', '')
         new_cookie = st.text_area(
-            "Cookie",
+            "Connection Token",
             value=current_cookie,
             height=100,
-            help="BetConstruct session cookie değeri"
+            help="BetConstruct connection token değeri"
         )
         
-        if st.button("🔄 Cookie'yi Güncelle"):
+        if st.button("🔄 Connection Token'ı Güncelle"):
             if new_cookie and new_cookie != current_cookie:
                 if update_env_variable('WITHDRAWAL_COOKIE', new_cookie):
-                    st.success("✅ Cookie güncellendi!")
-                    st.info("💾 Cookie .env dosyasına kaydedildi")
+                    st.success("✅ Connection Token güncellendi!")
+                    st.info("💾 Connection Token .env dosyasına kaydedildi")
                     st.warning("🔄 Değişikliklerin etkili olması için çekim izleyiciyi yeniden başlatın!")
                     st.rerun()
                 else:
-                    st.error("❌ Cookie güncellenirken hata oluştu!")
+                    st.error("❌ Connection Token güncellenirken hata oluştu!")
             else:
-                st.warning("Yeni bir cookie girin!")
+                st.warning("Yeni bir connection token girin!")
         
         # Subscribe Token
         current_subscribe_token = os.getenv('WITHDRAWAL_SUBSCRIBE_TOKEN', '')

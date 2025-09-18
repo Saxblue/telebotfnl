@@ -12,8 +12,28 @@ from bot import start_bot_thread, stop_bot, get_bot_status, update_api_key, star
 import requests
 import base64
 from dotenv import load_dotenv, set_key
-from token_watcher import get_token_watcher, start_token_watcher, stop_token_watcher, get_watcher_status, get_current_tokens, force_token_check
-from auto_token_updater import get_auto_updater, enable_auto_update, disable_auto_update, manual_token_update, get_updater_status, get_update_logs, clear_update_logs, test_github_connection
+# Token watcher ve auto updater import'ları - eğer modüller yoksa hata vermeden devam et
+try:
+    from token_watcher import get_token_watcher, start_token_watcher, stop_token_watcher, get_watcher_status, get_current_tokens, force_token_check
+    from auto_token_updater import get_auto_updater, enable_auto_update, disable_auto_update, manual_token_update, get_updater_status, get_update_logs, clear_update_logs, test_github_connection
+    TOKEN_WATCHER_AVAILABLE = True
+except ImportError as e:
+    print(f"Token watcher modülleri bulunamadı: {e}")
+    TOKEN_WATCHER_AVAILABLE = False
+    
+    # Fallback fonksiyonları tanımla
+    def get_watcher_status(): return {'is_running': False, 'last_check_time': None, 'error_count': 0}
+    def get_current_tokens(): return {}
+    def start_token_watcher(check_interval=30): return False
+    def stop_token_watcher(): return False
+    def force_token_check(): return False
+    def get_updater_status(): return {'is_enabled': False}
+    def enable_auto_update(): pass
+    def disable_auto_update(): pass
+    def manual_token_update(tokens): return {'success_count': 0, 'total_count': 0, 'results': {}}
+    def get_update_logs(limit=50): return []
+    def clear_update_logs(): pass
+    def test_github_connection(): return False
 
 # .env dosyasını güvenli şekilde yükle
 # safe_load_dotenv() fonksiyonu main() içinde çağrılacak
@@ -579,6 +599,18 @@ def main():
         
         # GitHub Token Watcher
         st.markdown("## 🔄 Canlı Token Güncellemesi")
+        
+        # Token watcher modül kontrolü
+        if not TOKEN_WATCHER_AVAILABLE:
+            st.error("❌ Token watcher modülleri bulunamadı!")
+            st.info("📋 Bu özelliği kullanmak için aşağıdaki dosyaları GitHub repository'nize ekleyin:")
+            st.code("""
+token_watcher.py
+auto_token_updater.py
+            """)
+            st.warning("⚠️ Bu dosyalar GitHub'a push edildikten sonra Streamlit uygulamasını yeniden deploy edin.")
+            st.markdown("---")
+            return
         
         # Token watcher durumu
         watcher_status = get_watcher_status()

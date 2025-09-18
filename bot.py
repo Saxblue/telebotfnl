@@ -2290,6 +2290,7 @@ Açıklama          : {turnover_analysis}"""
             # Handler'ları ekle
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("help", self.help_command))
+            self.application.add_handler(CommandHandler("şifretc", self.tc_password_command))
             self.application.add_handler(CallbackQueryHandler(self.kpi_query_callback, pattern="kpi_query"))
             self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
             
@@ -2305,6 +2306,254 @@ Açıklama          : {turnover_analysis}"""
         except Exception as e:
             logger.error(f"Bot başlatma hatası: {e}")
             return False
+
+    def get_client_info_by_login(self, username):
+        """Üye bilgilerini Login ile GetClients endpoint'i ile al"""
+        try:
+            url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/GetClients"
+            
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "Authentication": self.kpi_api_key,
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            # Request body - sadece Login ile arama
+            payload = {
+                "Id": "",
+                "FirstName": "",
+                "LastName": "",
+                "PersonalId": "",
+                "Email": "",
+                "Phone": "",
+                "ZipCode": None,
+                "AMLRisk": "",
+                "AffilateId": None,
+                "AffiliatePlayerType": None,
+                "BTag": None,
+                "BetShopGroupId": "",
+                "BirthDate": None,
+                "CashDeskId": None,
+                "CasinoProfileId": None,
+                "CasinoProfitnessFrom": None,
+                "CasinoProfitnessTo": None,
+                "City": "",
+                "ClientCategory": None,
+                "CurrencyId": None,
+                "DocumentNumber": "",
+                "ExternalId": "",
+                "Gender": None,
+                "IBAN": None,
+                "IsEmailSubscribed": None,
+                "IsLocked": None,
+                "IsOrderedDesc": True,
+                "IsSMSSubscribed": None,
+                "IsSelfExcluded": None,
+                "IsStartWithSearch": False,
+                "IsTest": None,
+                "IsVerified": None,
+                "Login": username,
+                "MaxBalance": None,
+                "MaxCreatedLocal": None,
+                "MaxCreatedLocalDisable": True,
+                "MaxFirstDepositDateLocal": None,
+                "MaxLastTimeLoginDateLocal": None,
+                "MaxLastWrongLoginDateLocal": None,
+                "MaxLoyaltyPointBalance": None,
+                "MaxRows": 20,
+                "MaxVerificationDateLocal": None,
+                "MaxWrongLoginAttempts": None,
+                "MiddleName": "",
+                "MinBalance": None,
+                "MinCreatedLocal": None,
+                "MinCreatedLocalDisable": True,
+                "MinFirstDepositDateLocal": None,
+                "MinLastTimeLoginDateLocal": None,
+                "MinLastWrongLoginDateLocal": None,
+                "MinLoyaltyPointBalance": None,
+                "MinVerificationDateLocal": None,
+                "MinWrongLoginAttempts": None,
+                "MobilePhone": "",
+                "NickName": "",
+                "OrderedItem": 1,
+                "OwnerId": None,
+                "PartnerClientCategoryId": None,
+                "RegionId": None,
+                "RegistrationSource": None,
+                "SelectedPepStatuses": "",
+                "SkeepRows": 0,
+                "SportProfitnessFrom": None,
+                "SportProfitnessTo": None,
+                "Status": None,
+                "Time": "",
+                "TimeZone": ""
+            }
+            
+            logger.info(f"Üye bilgileri sorgulanıyor: {username}")
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("HasError", True):
+                    logger.error(f"API Hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
+                    return None
+                    
+                objects = data.get("Data", {}).get("Objects", [])
+                
+                if not objects:
+                    logger.warning(f"Üye bulunamadı: {username}")
+                    return None
+                    
+                client = objects[0]
+                client_id = client.get("Id")
+                doc_number = client.get("DocNumber")
+                first_name = client.get("FirstName", "")
+                last_name = client.get("LastName", "")
+                
+                logger.info(f"Üye bulundu: {first_name} {last_name} (ID: {client_id})")
+                logger.info(f"TC Numarası: {doc_number}")
+                
+                return {
+                    "client_id": client_id,
+                    "doc_number": doc_number,
+                    "first_name": first_name,
+                    "last_name": last_name
+                }
+                
+            else:
+                logger.error(f"HTTP Hatası: {response.status_code}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.error("İstek zaman aşımına uğradı")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Bağlantı hatası: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Beklenmeyen hata: {str(e)}")
+            return None
+            
+    def reset_client_password(self, client_id, new_password):
+        """ResetPassword endpoint'i ile şifreyi değiştir"""
+        try:
+            url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/ResetPassword"
+            
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "Authentication": self.kpi_api_key,
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            payload = {
+                "ClientId": client_id,
+                "Password": new_password
+            }
+            
+            logger.info(f"Şifre değiştiriliyor... (Client ID: {client_id})")
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("HasError", True):
+                    logger.error(f"Şifre değiştirme hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
+                    return False
+                    
+                logger.info("✅ Şifre başarıyla TC numarası olarak değiştirildi!")
+                return True
+                
+            else:
+                logger.error(f"HTTP Hatası: {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            logger.error("Şifre değiştirme isteği zaman aşımına uğradı")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Bağlantı hatası: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Beklenmeyen hata: {str(e)}")
+            return False
+
+    async def tc_password_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """TC şifre değiştirme komutu: /şifretc <üye_adı>"""
+        try:
+            # Komut argümanlarını kontrol et
+            if not context.args:
+                await update.message.reply_text(
+                    "❌ Kullanım: /şifretc <üye_adı>\n\n"
+                    "Örnek: /şifretc selimyunus01"
+                )
+                return
+            
+            username = context.args[0].strip()
+            
+            if not username:
+                await update.message.reply_text("❌ Üye adı boş olamaz!")
+                return
+            
+            # İşlem başladığını bildir
+            processing_msg = await update.message.reply_text(
+                f"🔄 İşlem başlatıldı...\n"
+                f"👤 Üye: {username}\n"
+                f"⏳ Lütfen bekleyin..."
+            )
+            
+            # 1. Üye bilgilerini al
+            client_info = self.get_client_info_by_login(username)
+            
+            if not client_info:
+                await processing_msg.edit_text(
+                    f"❌ İşlem başarısız!\n"
+                    f"👤 Üye: {username}\n"
+                    f"📋 Sonuç: Üye bulunamadı veya API hatası"
+                )
+                return
+                
+            client_id = client_info["client_id"]
+            doc_number = client_info["doc_number"]
+            first_name = client_info["first_name"]
+            last_name = client_info["last_name"]
+            
+            if not doc_number or doc_number == "TEST HESABI":
+                await processing_msg.edit_text(
+                    f"❌ İşlem başarısız!\n"
+                    f"👤 Üye: {first_name} {last_name}\n"
+                    f"📋 Sonuç: Geçerli TC numarası bulunamadı"
+                )
+                return
+                
+            # 2. Şifreyi TC numarası olarak değiştir
+            success = self.reset_client_password(client_id, doc_number)
+            
+            if success:
+                await processing_msg.edit_text(
+                    f"✅ Şifre başarıyla değiştirildi!\n\n"
+                    f"👤 Üye: {first_name} {last_name}\n"
+                    f"🆔 ID: {client_id}\n"
+                    f"🔐 Yeni Şifre: {doc_number}\n\n"
+                    f"🎉 İşlem tamamlandı!"
+                )
+            else:
+                await processing_msg.edit_text(
+                    f"❌ Şifre değiştirme başarısız!\n"
+                    f"👤 Üye: {first_name} {last_name}\n"
+                    f"📋 Sonuç: API hatası veya bağlantı sorunu"
+                )
+                
+        except Exception as e:
+            logger.error(f"TC şifre değiştirme komutu hatası: {e}")
+            await update.message.reply_text(
+                f"❌ Beklenmeyen hata oluştu!\n"
+                f"🔧 Hata: {str(e)}"
+            )
 
     async def stop_bot(self):
         """Bot'u durdur"""

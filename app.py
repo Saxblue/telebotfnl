@@ -12,6 +12,8 @@ from bot import start_bot_thread, stop_bot, get_bot_status, update_api_key, star
 import requests
 import base64
 from dotenv import load_dotenv, set_key
+from token_watcher import get_token_watcher, start_token_watcher, stop_token_watcher, get_watcher_status, get_current_tokens, force_token_check
+from auto_token_updater import get_auto_updater, enable_auto_update, disable_auto_update, manual_token_update, get_updater_status, get_update_logs, clear_update_logs, test_github_connection
 
 # .env dosyasını güvenli şekilde yükle
 # safe_load_dotenv() fonksiyonu main() içinde çağrılacak
@@ -572,6 +574,217 @@ def main():
                         st.write(f"**🏦 Sistem:** {notification.get('payment_system', 'N/A')}")
                         st.write(f"**🏷️ BTag:** {notification.get('btag', 'N/A')}")
                         st.write(f"**📅 Zaman:** {notification.get('timestamp', 'N/A')}")
+        
+        st.markdown("---")
+        
+        # GitHub Token Watcher
+        st.markdown("## 🔄 Canlı Token Güncellemesi")
+        
+        # Token watcher durumu
+        watcher_status = get_watcher_status()
+        current_github_tokens = get_current_tokens()
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if watcher_status['is_running']:
+                st.markdown('<p class="status-running">🟢 Token İzleyici Aktif</p>', unsafe_allow_html=True)
+            else:
+                st.markdown('<p class="status-stopped">🔴 Token İzleyici Kapalı</p>', unsafe_allow_html=True)
+        
+        with col2:
+            if watcher_status['last_check_time']:
+                last_check = datetime.fromisoformat(watcher_status['last_check_time'])
+                st.write(f"**Son Kontrol:** {last_check.strftime('%H:%M:%S')}")
+            else:
+                st.write("**Son Kontrol:** Henüz yapılmadı")
+        
+        with col3:
+            st.write(f"**Hata Sayısı:** {watcher_status['error_count']}")
+        
+        # Token watcher kontrolleri
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🚀 Token İzleyiciyi Başlat"):
+                if start_token_watcher(check_interval=30):
+                    st.success("✅ Token izleyici başlatıldı!")
+                    st.info("🔄 GitHub'daki token değişiklikleri 30 saniyede bir kontrol edilecek")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Token izleyici zaten çalışıyor")
+        
+        with col2:
+            if st.button("🛑 Token İzleyiciyi Durdur"):
+                if stop_token_watcher():
+                    st.success("✅ Token izleyici durduruldu!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Token izleyici zaten durmuş")
+        
+        with col3:
+            if st.button("🔄 Zorla Kontrol Et"):
+                with st.spinner("Token'lar kontrol ediliyor..."):
+                    if force_token_check():
+                        st.success("🔔 Token değişikliği algılandı ve güncellendi!")
+                    else:
+                        st.info("ℹ️ Token'larda değişiklik yok")
+                    st.rerun()
+        
+        # GitHub'dan alınan mevcut token'lar
+        if current_github_tokens:
+            st.markdown("### 📋 GitHub'dan Alınan Mevcut Token'lar")
+            
+            with st.expander("🔍 Token Detayları", expanded=False):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**🔐 Authentication Token:**")
+                    auth_token = current_github_tokens.get('authToken', 'Yok')
+                    if auth_token and auth_token != 'Yok':
+                        st.code(f"{auth_token[:20]}...{auth_token[-10:]}")
+                        if st.button("📋 Auth Token'ı Kopyala", key="copy_auth"):
+                            st.write("Token kopyalandı (manuel olarak kullanın)")
+                    else:
+                        st.write("❌ Bulunamadı")
+                    
+                    st.write("**🔗 Connection Token:**")
+                    conn_token = current_github_tokens.get('connectionToken', 'Yok')
+                    if conn_token and conn_token != 'Yok':
+                        st.code(f"{conn_token[:20]}...{conn_token[-10:]}")
+                    else:
+                        st.write("❌ Bulunamadı")
+                
+                with col2:
+                    st.write("**🏠 Hub Access Token:**")
+                    hub_token = current_github_tokens.get('hubAccessToken', 'Yok')
+                    if hub_token and hub_token != 'Yok':
+                        st.code(f"{hub_token[:20]}...{hub_token[-10:]}")
+                    else:
+                        st.write("❌ Bulunamadı")
+                    
+                    st.write("**📡 Subscription Token:**")
+                    sub_token = current_github_tokens.get('subscriptionToken', 'Yok')
+                    if sub_token and sub_token != 'Yok':
+                        st.code(f"{sub_token[:20]}...{sub_token[-10:]}")
+                    else:
+                        st.write("❌ Bulunamadı")
+                
+                # Son güncelleme zamanı
+                last_updated = current_github_tokens.get('lastUpdated')
+                if last_updated:
+                    update_time = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                    st.write(f"**📅 Son Güncelleme:** {update_time.strftime('%d.%m.%Y %H:%M:%S')}")
+            
+            # Otomatik token güncelleme
+            st.markdown("### ⚡ Otomatik Token Güncelleme")
+            
+            # Auto updater durumu
+            updater_status = get_updater_status()
+            
+            auto_update_enabled = st.checkbox(
+                "🔄 GitHub'dan token değişikliği algılandığında otomatik olarak bot token'larını güncelle",
+                value=updater_status['is_enabled'],
+                help="Bu seçenek aktifken, GitHub'daki token'lar değiştiğinde bot'taki token'lar otomatik olarak güncellenecek"
+            )
+            
+            # Otomatik güncelleme durumunu güncelle
+            if auto_update_enabled != updater_status['is_enabled']:
+                if auto_update_enabled:
+                    enable_auto_update()
+                    st.success("✅ Otomatik token güncellemesi etkinleştirildi!")
+                else:
+                    disable_auto_update()
+                    st.info("ℹ️ Otomatik token güncellemesi devre dışı bırakıldı")
+                st.rerun()
+            
+            if auto_update_enabled:
+                st.success("✅ Otomatik güncelleme aktif - Token değişiklikleri algılandığında bot token'ları otomatik güncellenecek")
+                
+                # Token mapping
+                st.markdown("#### 🔗 Token Eşleştirme")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**GitHub → Bot Token Eşleştirmesi:**")
+                    st.write("• `authToken` → `KPI_API_KEY`")
+                    st.write("• `hubAccessToken` → `WITHDRAWAL_HUB_ACCESS_TOKEN`")
+                    st.write("• `connectionToken` → `WITHDRAWAL_CONNECTION_TOKEN`")
+                    st.write("• `subscriptionToken` → `WITHDRAWAL_SUBSCRIBE_TOKEN`")
+                
+                with col2:
+                    st.write("**Güncelleme Kuralları:**")
+                    st.write("• Sadece null olmayan token'lar güncellenir")
+                    st.write("• Değişiklik algılandığında .env dosyası güncellenir")
+                    st.write("• Bot yeniden başlatma gerekmez")
+                    st.write("• Değişiklik logları tutulur")
+                
+                # Güncelleme logları
+                st.markdown("#### 📋 Güncelleme Logları")
+                update_logs = get_update_logs(10)
+                
+                if update_logs:
+                    with st.expander("🔍 Son 10 Log Kaydı", expanded=False):
+                        for log in reversed(update_logs):
+                            timestamp = datetime.fromisoformat(log['timestamp']).strftime('%H:%M:%S')
+                            level = log['level']
+                            message = log['message']
+                            
+                            if level == 'success':
+                                st.success(f"[{timestamp}] {message}")
+                            elif level == 'error':
+                                st.error(f"[{timestamp}] {message}")
+                            elif level == 'warning':
+                                st.warning(f"[{timestamp}] {message}")
+                            else:
+                                st.info(f"[{timestamp}] {message}")
+                    
+                    if st.button("🗑️ Logları Temizle"):
+                        clear_update_logs()
+                        st.success("✅ Loglar temizlendi!")
+                        st.rerun()
+                else:
+                    st.info("Henüz log kaydı bulunmuyor")
+            else:
+                st.info("ℹ️ Otomatik güncelleme kapalı - Token'ları manuel olarak güncelleyebilirsiniz")
+            
+            # Manuel güncelleme butonu (her zaman görünür)
+            st.markdown("#### 🔄 Manuel Güncelleme")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🔄 Şimdi GitHub Token'larını Bot'a Aktar"):
+                    with st.spinner("Token'lar güncelleniyor..."):
+                        result = manual_token_update(current_github_tokens)
+                        
+                        if result['total_count'] > 0:
+                            st.success(f"🎉 {result['success_count']}/{result['total_count']} token başarıyla güncellendi!")
+                            st.info("💾 Token'lar .env dosyasına kaydedildi")
+                            
+                            # Detaylı sonuçları göster
+                            for github_key, res in result['results'].items():
+                                if res['status'] == 'success':
+                                    st.success(f"✅ {github_key} → {res['env_key']} güncellendi")
+                                elif res['status'] == 'error':
+                                    st.error(f"❌ {github_key} → {res['env_key']} güncellenemedi")
+                                elif res['status'] == 'skipped':
+                                    st.warning(f"⚠️ {github_key} atlandı ({res['reason']})")
+                            
+                            if result['success_count'] > 0:
+                                st.warning("🔄 Değişikliklerin etkili olması için ilgili servisleri yeniden başlatın!")
+                        else:
+                            st.warning("⚠️ Güncellenecek geçerli token bulunamadı")
+                        
+                        st.rerun()
+            
+            with col2:
+                if st.button("🔍 GitHub Bağlantısını Test Et"):
+                    with st.spinner("GitHub bağlantısı test ediliyor..."):
+                        if test_github_connection():
+                            st.success("✅ GitHub bağlantısı başarılı!")
+                        else:
+                            st.error("❌ GitHub bağlantısı başarısız!")
+                        st.rerun()
         
         st.markdown("---")
         

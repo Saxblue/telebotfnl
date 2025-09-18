@@ -49,6 +49,7 @@ class WithdrawalListener:
         self.base_url = "https://backofficewebadmin.betconstruct.com"
         
         self.withdrawal_notifications = []
+        self.deposit_notifications = []  # Yatırım bildirimleri için
         self.is_running = False
         
         # Ping/Pong ve token yenileme için
@@ -61,6 +62,12 @@ class WithdrawalListener:
         self.max_reconnect_attempts = 5
         self.ping_thread = None
         self.token_refresh_thread = None
+        
+        # Yatırım bildirimi için
+        self.deposit_check_interval = 60  # 60 saniyede bir yatırım kontrolü
+        self.last_deposit_check = 0
+        self.deposit_check_thread = None
+        self.last_processed_deposits = set()  # İşlenmiş yatırımları takip et
         
     def log_message(self, message):
         """Log mesajı"""
@@ -138,6 +145,40 @@ class WithdrawalListener:
         self.token_refresh_thread.start()
         self.log_message("🔑 Token refresh thread başlatıldı")
     
+    def start_deposit_check_thread(self):
+        """Yatırım kontrolü thread'ini başlat"""
+        if self.deposit_check_thread and self.deposit_check_thread.is_alive():
+            return
+            
+        def deposit_check_loop():
+            while self.is_running:
+                try:
+                    current_time = time.time()
+                    
+                    # Yatırım kontrolü zamanı geldi mi?
+                    if current_time - self.last_deposit_check >= self.deposit_check_interval:
+                        self.log_message("💰 Yeni yatırım talepleri kontrol ediliyor...")
+                        
+                        # Yeni yatırım taleplerini kontrol et
+                        new_deposits = self.check_new_deposits()
+                        
+                        if new_deposits:
+                            self.log_message(f"🎉 {len(new_deposits)} yeni yatırım talebi bulundu!")
+                            for deposit in new_deposits:
+                                self.process_deposit_notification(deposit)
+                        
+                        self.last_deposit_check = current_time
+                    
+                    time.sleep(10)  # 10 saniyede bir kontrol et
+                    
+                except Exception as e:
+                    self.log_message(f"❌ Deposit check thread hatası: {str(e)}")
+                    time.sleep(30)
+        
+        self.deposit_check_thread = threading.Thread(target=deposit_check_loop, daemon=True)
+        self.deposit_check_thread.start()
+        self.log_message("💰 Deposit check thread başlatıldı")
+    
     def refresh_tokens(self):
         """Token'ları yenile"""
         try:
@@ -179,6 +220,153 @@ class WithdrawalListener:
         except Exception as e:
             self.log_message(f"❌ Yeniden bağlanma hatası: {str(e)}")
             return False
+    
+    def check_new_deposits(self):
+        """Yeni yatırım taleplerini kontrol et"""
+        try:
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "Authentication": self.hub_access_token,  # API key olarak hub access token kullan
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            # Bugünün tarihi için payload
+            from datetime import datetime, timedelta
+            today = datetime.now()
+            yesterday = today - timedelta(days=1)
+            
+            payload = {
+                "ClientId": "",
+                "ClientLogin": "",
+                "CurrencyId": None,
+                "Email": "",
+                "FromDateLocal": yesterday.strftime("%d-%m-%y - 00:00:00"),
+                "Id": None,
+                "IsBonus": None,
+                "IsTest": "",
+                "PaymentTypeIds": [],
+                "RegionId": None,
+                "StateList": [],
+                "ToDateLocal": today.strftime("%d-%m-%y - 23:59:59")
+            }
+            
+            url = f"{self.base_url}/api/tr/Client/GetClientDepositRequestsWithTotals"
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("HasError", True):
+                    self.log_message(f"❌ Deposit API hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
+                    return []
+                
+                deposits = data.get("Data", {}).get("ClientRequests", [])
+                
+                # Yeni yatırımları filtrele (son 10 dakikada olanlar)
+                new_deposits = []
+                current_time = datetime.now()
+                
+                for deposit in deposits:
+                    deposit_id = deposit.get("Id")
+                    request_time_str = deposit.get("RequestTime", "")
+                    state_name = deposit.get("StateName", "")
+                    
+                    # Sadece "Yeni" durumundaki talepleri işle
+                    if state_name != "Yeni":
+                        continue
+                    
+                    # Daha önce işlenmiş mi kontrol et
+                    if deposit_id in self.last_processed_deposits:
+                        continue
+                    
+                    # Son 10 dakikada mı kontrol et
+                    try:
+                        # ISO format: "2025-09-18T01:08:17.692+04:00"
+                        request_time = datetime.fromisoformat(request_time_str.replace('+04:00', ''))
+                        time_diff = (current_time - request_time).total_seconds()
+                        
+                        # Son 10 dakikada oluşturulmuş mu?
+                        if time_diff <= 600:  # 10 dakika = 600 saniye
+                            new_deposits.append(deposit)
+                            self.last_processed_deposits.add(deposit_id)
+                            
+                    except Exception as e:
+                        self.log_message(f"⚠️ Tarih parse hatası: {str(e)}")
+                        continue
+                
+                return new_deposits
+                
+            else:
+                self.log_message(f"❌ Deposit API HTTP hatası: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            self.log_message(f"❌ Deposit kontrol hatası: {str(e)}")
+            return []
+    
+    def process_deposit_notification(self, deposit_data):
+        """Yatırım bildirimini işle ve Telegram'a gönder"""
+        try:
+            # Yatırım bilgilerini çıkar
+            client_name = deposit_data.get("ClientName", "")
+            client_login = deposit_data.get("ClientLogin", "")
+            amount = deposit_data.get("Amount", 0)
+            currency = deposit_data.get("CurrencyId", "TRY")
+            btag = deposit_data.get("BTag", "")
+            info = deposit_data.get("Info", "")
+            
+            # M.Notu'nu Info alanından çıkar
+            customer_note = ""
+            if info and ":" in info:
+                # "BANKA HAVALE MUSTERI NOTU:fast" -> "fast"
+                parts = info.split(":", 1)
+                if len(parts) > 1:
+                    customer_note = parts[1].strip()
+            
+            # Telegram mesajı oluştur (istenen şablon)
+            message = "🔔 Yeni yatırım talebi geldi!🔔\n"
+            message += f"👤 Müşteri: {client_name}\n"
+            message += f"🆔 Kullanıcı Adı: {client_login}\n"
+            
+            # BTag varsa ekle
+            if btag:
+                message += f"🏷️ B. Tag: {btag}\n"
+            
+            message += f"💰 Miktar: {amount:,.2f} {currency}\n"
+            
+            # M.Notu varsa ekle
+            if customer_note:
+                message += f"📝M.Notu: {customer_note}"
+            
+            # Telegram'a gönder
+            self.send_telegram_notification(message)
+            
+            # Bildirimi kaydet
+            notification_info = {
+                "type": "deposit",
+                "client_id": deposit_data.get("ClientId", ""),
+                "client_name": client_name,
+                "client_login": client_login,
+                "amount": amount,
+                "currency": currency,
+                "btag": btag,
+                "customer_note": customer_note,
+                "timestamp": datetime.now().isoformat(),
+                "message": message
+            }
+            
+            self.deposit_notifications.append(notification_info)
+            
+            # Son 100 bildirimi tut
+            if len(self.deposit_notifications) > 100:
+                self.deposit_notifications = self.deposit_notifications[-100:]
+            
+            self.log_message(f"💰 Yatırım bildirimi gönderildi: {client_name} - {amount} {currency}")
+            
+        except Exception as e:
+            self.log_message(f"❌ Yatırım bildirimi işleme hatası: {str(e)}")
         
     def negotiate_connection(self):
         """SignalR negotiate işlemi"""
@@ -584,13 +772,15 @@ class WithdrawalListener:
             self.last_pong_time = time.time()  # İlk pong zamanını ayarla
             
             if self.connect_signalr():
-                # Ping/Pong ve token refresh thread'lerini başlat
+                # Ping/Pong, token refresh ve deposit check thread'lerini başlat
                 self.start_ping_thread()
                 self.start_token_refresh_thread()
+                self.start_deposit_check_thread()
                 
                 self.log_message("✅ Withdrawal listener başarıyla başlatıldı!")
                 self.log_message("🏓 Ping/Pong mekanizması aktif")
                 self.log_message("🔑 Otomatik token yenileme aktif")
+                self.log_message("💰 Otomatik yatırım bildirimi aktif")
                 return True
             else:
                 self.log_message("❌ Withdrawal listener başlatılamadı!")
@@ -3001,7 +3191,7 @@ def get_withdrawal_listener_status():
     global bot_instance
     if bot_instance:
         return bot_instance.get_withdrawal_listener_status()
-    return {'is_running': False, 'is_connected': False, 'notifications_count': 0}
+    return {'is_running': False, 'is_connected': False, 'notifications_count': 0, 'last_check_time': None, 'processed_withdrawals_count': 0}
 
 def get_withdrawal_notifications(limit=10):
     """Global withdrawal bildirimleri alma fonksiyonu"""
@@ -3009,6 +3199,26 @@ def get_withdrawal_notifications(limit=10):
     if bot_instance:
         return bot_instance.get_withdrawal_notifications(limit)
     return []
+
+def get_deposit_notifications(limit=10):
+    """Global yatırım bildirimleri alma fonksiyonu"""
+    global bot_instance
+    if bot_instance and bot_instance.withdrawal_listener:
+        return bot_instance.withdrawal_listener.deposit_notifications[-limit:]
+    return []
+
+def get_deposit_listener_status():
+    """Global yatırım listener durum fonksiyonu"""
+    global bot_instance
+    if bot_instance and bot_instance.withdrawal_listener:
+        return {
+            'is_running': bot_instance.withdrawal_listener.is_running,
+            'deposit_check_active': bot_instance.withdrawal_listener.deposit_check_thread and bot_instance.withdrawal_listener.deposit_check_thread.is_alive(),
+            'notifications_count': len(bot_instance.withdrawal_listener.deposit_notifications),
+            'last_check_time': bot_instance.withdrawal_listener.last_deposit_check,
+            'processed_deposits_count': len(bot_instance.withdrawal_listener.last_processed_deposits)
+        }
+    return {'is_running': False, 'deposit_check_active': False, 'notifications_count': 0}
 
 def update_telegram_chat_ids(chat_ids_str):
     """Telegram chat ID'lerini güncelle"""

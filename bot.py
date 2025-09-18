@@ -2290,7 +2290,7 @@ Açıklama          : {turnover_analysis}"""
             # Handler'ları ekle
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("help", self.help_command))
-            self.application.add_handler(CommandHandler("şifretc", self.tc_password_command))
+            self.application.add_handler(CommandHandler("sifretc", self.tc_password_command))
             self.application.add_handler(CallbackQueryHandler(self.kpi_query_callback, pattern="kpi_query"))
             self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
             

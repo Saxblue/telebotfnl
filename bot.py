@@ -477,8 +477,8 @@ class WithdrawalListener:
 
 class KPIBot:
     def __init__(self):
-        self.token = os.getenv('TELEGRAM_TOKEN')
-        self.kpi_api_key = os.getenv('KPI_API_KEY', '2d3bb9ccd0cecc72866bd0107be3ffc0a6eaa5e78e4d221f3db49e345cd1a054')
+        self.token = os.getenv('TELEGRAM_TOKEN') or '8355199755:AAGojbMeqN-Zxd3nTuRJPlqu15ZfuePUxgY'
+        self.kpi_api_key = os.getenv('KPI_API_KEY', 'aad90bbaa5bc1dd7901df0879f7f4a16ab392fb02b036f07cd2a6bee2aecdfb3')
         self.github_token = os.getenv('GITHUB_TOKEN')
         self.github_repo = os.getenv('GITHUB_REPO', 'https://github.com/Saxblue/telebot')
         
@@ -1667,7 +1667,7 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 • `id 9470204, 9436169, 9220936` - Çoklu kullanıcı Excel raporu
 • `kadı johndoe` - Kullanıcı adıyla arama
 • `/fraud 201190504` - Fraud raporu oluştur
-• `/sifretc selimyunus01` - TC şifre değiştir
+• `/şifretc selimyunus01` - TC şifre değiştir
 
 🔍 **Kullanıcı Adı Arama:**
 `kadı` komutu ile kullanıcı adına göre arama yapabilir ve detaylı bilgileri görüntüleyebilirsiniz.
@@ -1676,7 +1676,7 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 `fraud` komutu ile kullanıcı ID'sine göre detaylı fraud analizi raporu oluşturabilirsiniz.
 
 🔐 **TC Şifre Değiştirme:**
-`/sifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
+`/şifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
 
 📊 **Excel Raporu:**
 Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
@@ -1703,7 +1703,7 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 • `fraud 201190504` - Detaylı fraud analizi raporu
 
 🔐 **TC Şifre Değiştirme:**
-• `/sifretc selimyunus01` - Üye TC'si ile şifre değiştir
+• `/şifretc selimyunus01` - Üye TC'si ile şifre değiştir
 
 ❓ **Diğer Komutlar:**
 • `/start` - Bot'u başlat
@@ -1714,7 +1714,7 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 kadı testuser
 id 201190504
 fraud 201190504
-/sifretc selimyunus01
+/şifretc selimyunus01
 ```
 
 💡 **İpuçları:**
@@ -2144,7 +2144,7 @@ Açıklama          : {turnover_analysis}"""
             return None
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Mesaj işleyici - 'id' ve 'kadı' ile başlayan mesajları işler"""
+        """Mesaj işleyici - 'id', 'kadı', 'fraud' ve 'şifretc' ile başlayan mesajları işler"""
         text = update.message.text.strip()
         user = update.effective_user
         
@@ -2156,6 +2156,11 @@ Açıklama          : {turnover_analysis}"""
         # 'fraud' tetikleyicisi kontrolü
         if text.lower().startswith('fraud'):
             await self.handle_fraud_search(update, context)
+            return
+        
+        # 'şifretc' tetikleyicisi kontrolü
+        if text.lower().startswith('şifretc'):
+            await self.handle_tc_password_change(update, context)
             return
         
         # 'id' tetikleyicisi kontrolü - sessizce çık
@@ -2299,7 +2304,7 @@ Açıklama          : {turnover_analysis}"""
             # Handler'ları ekle
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("help", self.help_command))
-            self.application.add_handler(CommandHandler("sifretc", self.tc_password_command))
+            self.application.add_handler(CommandHandler("şifretc", self.tc_password_command))
             self.application.add_handler(CallbackQueryHandler(self.kpi_query_callback, pattern="kpi_query"))
             self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
             
@@ -2563,6 +2568,256 @@ Açıklama          : {turnover_analysis}"""
                 f"❌ Beklenmeyen hata oluştu!\n"
                 f"🔧 Hata: {str(e)}"
             )
+
+    async def handle_tc_password_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """TC şifre değiştirme komutu - 'şifretc username' formatında"""
+        text = update.message.text.strip()
+        user = update.effective_user
+        
+        # Komutu parse et
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text(
+                "❌ Kullanım hatası!\n\n"
+                "📝 Doğru format:\n"
+                "`şifretc kullaniciadi`\n\n"
+                "Örnek: `şifretc selimyunus01`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        username = parts[1].strip()
+        
+        # İşlem başladı mesajı
+        processing_msg = await update.message.reply_text(
+            f"🔄 {username} kullanıcısı için şifre TC ile değiştiriliyor...\n"
+            "Lütfen bekleyin..."
+        )
+        
+        try:
+            # KPI API anahtarını al
+            api_key = self.kpi_api_key
+            if not api_key:
+                await processing_msg.edit_text(
+                    "❌ KPI API anahtarı bulunamadı!\n"
+                    "Lütfen önce API anahtarını ayarlayın."
+                )
+                return
+            
+            # 1. Üye bilgilerini al
+            client_info = await self.get_client_info_for_tc(username, api_key)
+            
+            if not client_info:
+                await processing_msg.edit_text(
+                    f"❌ Kullanıcı bulunamadı!\n"
+                    f"👤 Aranan: {username}\n"
+                    f"📋 Sonuç: Üye bilgileri alınamadı"
+                )
+                return
+            
+            client_id = client_info["client_id"]
+            doc_number = client_info["doc_number"]
+            first_name = client_info["first_name"]
+            last_name = client_info["last_name"]
+            
+            if not doc_number or doc_number == "TEST HESABI":
+                await processing_msg.edit_text(
+                    f"❌ Geçerli TC numarası bulunamadı!\n"
+                    f"👤 Üye: {first_name} {last_name}\n"
+                    f"📋 TC: {doc_number or 'Boş'}"
+                )
+                return
+            
+            # 2. Şifreyi TC numarası olarak değiştir
+            success = await self.reset_password_with_tc(client_id, doc_number, api_key)
+            
+            if success:
+                await processing_msg.edit_text(
+                    f"✅ Şifre başarıyla değiştirildi!\n\n"
+                    f"👤 Üye: {first_name} {last_name}\n"
+                    f"🆔 ID: {client_id}\n"
+                    f"🔐 Yeni Şifre: {doc_number}\n\n"
+                    f"🎉 İşlem tamamlandı!"
+                )
+            else:
+                await processing_msg.edit_text(
+                    f"❌ Şifre değiştirme başarısız!\n"
+                    f"👤 Üye: {first_name} {last_name}\n"
+                    f"📋 Sonuç: API hatası veya bağlantı sorunu"
+                )
+                
+        except Exception as e:
+            logger.error(f"TC şifre değiştirme komutu hatası: {e}")
+            await processing_msg.edit_text(
+                f"❌ Beklenmeyen hata oluştu!\n"
+                f"🔧 Hata: {str(e)}"
+            )
+
+    async def get_client_info_for_tc(self, username, api_key):
+        """TC şifre değiştirme için üye bilgilerini al - TC.py ile aynı API kullanımı"""
+        try:
+            # TC.py ile aynı URL ve header yapısı
+            url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/GetClients"
+            
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "Authentication": api_key,  # TC.py'deki gibi Authentication header
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            # TC.py ile aynı payload yapısı
+            payload = {
+                "Id": "",
+                "FirstName": "",
+                "LastName": "",
+                "PersonalId": "",
+                "Email": "",
+                "Phone": "",
+                "ZipCode": None,
+                "AMLRisk": "",
+                "AffilateId": None,
+                "AffiliatePlayerType": None,
+                "BTag": None,
+                "BetShopGroupId": "",
+                "BirthDate": None,
+                "CashDeskId": None,
+                "CasinoProfileId": None,
+                "CasinoProfitnessFrom": None,
+                "CasinoProfitnessTo": None,
+                "City": "",
+                "ClientCategory": None,
+                "CurrencyId": None,
+                "DocumentNumber": "",
+                "ExternalId": "",
+                "Gender": None,
+                "IBAN": None,
+                "IsEmailSubscribed": None,
+                "IsLocked": None,
+                "IsOrderedDesc": True,
+                "IsSMSSubscribed": None,
+                "IsSelfExcluded": None,
+                "IsStartWithSearch": False,
+                "IsTest": None,
+                "IsVerified": None,
+                "Login": username,  # Sadece bu alanı dolduruyoruz
+                "MaxBalance": None,
+                "MaxCreatedLocal": None,
+                "MaxCreatedLocalDisable": True,
+                "MaxFirstDepositDateLocal": None,
+                "MaxLastTimeLoginDateLocal": None,
+                "MaxLastWrongLoginDateLocal": None,
+                "MaxLoyaltyPointBalance": None,
+                "MaxRows": 20,
+                "MaxVerificationDateLocal": None,
+                "MaxWrongLoginAttempts": None,
+                "MiddleName": "",
+                "MinBalance": None,
+                "MinCreatedLocal": None,
+                "MinCreatedLocalDisable": True,
+                "MinFirstDepositDateLocal": None,
+                "MinLastTimeLoginDateLocal": None,
+                "MinLastWrongLoginDateLocal": None,
+                "MinLoyaltyPointBalance": None,
+                "MinVerificationDateLocal": None,
+                "MinWrongLoginAttempts": None,
+                "MobilePhone": "",
+                "NickName": "",
+                "OrderedItem": 1,
+                "OwnerId": None,
+                "PartnerClientCategoryId": None,
+                "RegionId": None,
+                "RegistrationSource": None,
+                "SelectedPepStatuses": "",
+                "SkeepRows": 0,
+                "SportProfitnessFrom": None,
+                "SportProfitnessTo": None,
+                "Status": None,
+                "Time": "",
+                "TimeZone": ""
+            }
+            
+            logger.info(f"TC şifre değiştirme için üye bilgileri sorgulanıyor: {username}")
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("HasError", True):
+                    logger.error(f"GetClients API hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
+                    return None
+                
+                # TC.py ile aynı response yapısı
+                objects = data.get("Data", {}).get("Objects", [])
+                
+                if not objects:
+                    logger.error(f"Kullanıcı bulunamadı: {username}")
+                    return None
+                
+                client = objects[0]
+                client_id = client.get("Id")
+                doc_number = client.get("DocNumber")  # TC.py'de DocNumber
+                first_name = client.get("FirstName", "")
+                last_name = client.get("LastName", "")
+                
+                logger.info(f"Üye bulundu: {first_name} {last_name} (ID: {client_id})")
+                logger.info(f"TC Numarası: {doc_number}")
+                
+                return {
+                    "client_id": client_id,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "doc_number": doc_number,
+                    "username": username
+                }
+            else:
+                logger.error(f"GetClients HTTP hatası: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"get_client_info_for_tc hatası: {str(e)}")
+            return None
+
+    async def reset_password_with_tc(self, client_id, new_password, api_key):
+        """TC numarası ile şifre sıfırlama - TC.py ile aynı API kullanımı"""
+        try:
+            # TC.py ile aynı URL ve header yapısı
+            url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/ResetPassword"
+            
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "Authentication": api_key,  # TC.py'deki gibi Authentication header
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            # TC.py ile aynı payload yapısı
+            payload = {
+                "ClientId": client_id,
+                "Password": new_password  # TC.py'de "Password" key'i kullanılıyor
+            }
+            
+            logger.info(f"Şifre değiştiriliyor... (Client ID: {client_id})")
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("HasError", True):
+                    logger.error(f"Şifre değiştirme hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
+                    return False
+                
+                logger.info(f"✅ Şifre başarıyla TC numarası olarak değiştirildi! (Client ID: {client_id})")
+                return True
+            else:
+                logger.error(f"ResetPassword HTTP hatası: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"reset_password_with_tc hatası: {str(e)}")
+            return False
 
     async def stop_bot(self):
         """Bot'u durdur"""

@@ -229,19 +229,33 @@ class WithdrawalListener:
             self.log_message("🔍 Yatırım talepleri kontrol ediliyor...")
             self.log_message(f"🔑 API Key: {self.api_key[:20]}..." if self.api_key else "❌ API Key yok!")
             
-            # API çağrısı yap
-            url = "https://backofficewebadmin.betconstruct.com/ApiRequest/GetClientDepositRequestsWithTotals"
+            # API çağrısı yap (doğru endpoint)
+            url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/GetClientDepositRequestsWithTotals"
             headers = {
                 'Authentication': self.api_key,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json;charset=UTF-8',
+                'Accept': 'application/json, text/plain, */*'
             }
             
-            # Bugünün tarihini al
-            today = datetime.now().strftime("%Y-%m-%d")
+            # Bugünün tarihini doğru formatta al
+            today = datetime.now()
+            tomorrow = today + timedelta(days=1)
+            today_str = today.strftime("%d-%m-%y - 00:00:00")
+            tomorrow_str = tomorrow.strftime("%d-%m-%y - 00:00:00")
+            
             payload = {
-                "FromDate": today,
-                "ToDate": today,
-                "WithTotals": True
+                "ClientId": "",
+                "ClientLogin": "",
+                "CurrencyId": None,
+                "Email": "",
+                "FromDateLocal": today_str,
+                "Id": None,
+                "IsBonus": None,
+                "IsTest": "",
+                "PaymentTypeIds": [],
+                "RegionId": None,
+                "StateList": [],
+                "ToDateLocal": tomorrow_str
             }
             
             self.log_message(f"📡 API çağrısı yapılıyor: {url}")
@@ -254,7 +268,13 @@ class WithdrawalListener:
             
             if response.status_code == 200:
                 data = response.json()
-                deposits = data.get("Objects", [])
+                
+                # API response formatını kontrol et
+                if data.get("HasError", True):
+                    self.log_message(f"❌ API Hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
+                    return
+                
+                deposits = data.get("Data", {}).get("ClientRequests", [])
                 
                 self.log_message(f"📋 Toplam yatırım talebi sayısı: {len(deposits)}")
                 
@@ -279,12 +299,12 @@ class WithdrawalListener:
                     request_time_str = deposit.get("RequestTime", "")
                     state_name = deposit.get("StateName", "")
                     
-                    # "Yeni" durumundaki talepleri say
-                    if state_name == "Yeni":
+                    # "Ödendi" durumundaki talepleri say (yeni yatırımlar bu durumda geliyor)
+                    if state_name == "Ödendi":
                         yeni_state_count += 1
                     
-                    # Sadece "Yeni" durumundaki talepleri işle
-                    if state_name != "Yeni":
+                    # Sadece "Ödendi" durumundaki talepleri işle (yeni yatırımlar bu durumda)
+                    if state_name != "Ödendi":
                         continue
                     
                     # Daha önce işlenmiş mi kontrol et
@@ -312,7 +332,7 @@ class WithdrawalListener:
                         self.log_message(f"⚠️ Tarih parse hatası: {str(e)}")
                         continue
                 
-                self.log_message(f"📊 'Yeni' durumunda toplam: {yeni_state_count}")
+                self.log_message(f"📊 'Ödendi' durumunda toplam: {yeni_state_count}")
                 self.log_message(f"🆕 Son 10 dakikada yeni: {len(new_deposits)}")
                 
                 # Yeni yatırım taleplerini işle

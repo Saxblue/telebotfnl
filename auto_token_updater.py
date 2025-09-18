@@ -23,7 +23,7 @@ class AutoTokenUpdater:
         self.token_mapping = {
             'authToken': 'KPI_API_KEY',
             'hubAccessToken': 'WITHDRAWAL_HUB_ACCESS_TOKEN',
-            'connectionToken': 'WITHDRAWAL_CONNECTION_TOKEN',
+            'connectionToken': 'WITHDRAWAL_COOKIE',
             'subscriptionToken': 'WITHDRAWAL_SUBSCRIBE_TOKEN'
         }
         

@@ -1667,12 +1667,16 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 • `id 9470204, 9436169, 9220936` - Çoklu kullanıcı Excel raporu
 • `kadı johndoe` - Kullanıcı adıyla arama
 • `/fraud 201190504` - Fraud raporu oluştur
+• `/sifretc selimyunus01` - TC şifre değiştir
 
 🔍 **Kullanıcı Adı Arama:**
 `kadı` komutu ile kullanıcı adına göre arama yapabilir ve detaylı bilgileri görüntüleyebilirsiniz.
 
 🚨 **Fraud Raporu:**
 `fraud` komutu ile kullanıcı ID'sine göre detaylı fraud analizi raporu oluşturabilirsiniz.
+
+🔐 **TC Şifre Değiştirme:**
+`/sifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
 
 📊 **Excel Raporu:**
 Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
@@ -1698,6 +1702,9 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 🚨 **Fraud Raporu:**
 • `fraud 201190504` - Detaylı fraud analizi raporu
 
+🔐 **TC Şifre Değiştirme:**
+• `/sifretc selimyunus01` - Üye TC'si ile şifre değiştir
+
 ❓ **Diğer Komutlar:**
 • `/start` - Bot'u başlat
 • `/help` - Bu yardım mesajı
@@ -1707,13 +1714,15 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 kadı testuser
 id 201190504
 fraud 201190504
+/sifretc selimyunus01
 ```
 
 💡 **İpuçları:**
 - Kullanıcı adı araması detaylı bilgi verir
 - ID sorgusu Excel dosyası oluşturur
 - Fraud raporu kapsamlı analiz sağlar
-        """
+- TC şifre değiştirme üyenin TC'sini yeni şifre yapar
+    """
         await update.message.reply_text(help_text, parse_mode='Markdown')
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

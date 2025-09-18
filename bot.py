@@ -51,9 +51,134 @@ class WithdrawalListener:
         self.withdrawal_notifications = []
         self.is_running = False
         
+        # Ping/Pong ve token yenileme için
+        self.last_ping_time = 0
+        self.last_pong_time = 0
+        self.ping_interval = 30  # 30 saniyede bir ping gönder
+        self.token_refresh_interval = 300  # 5 dakikada bir token'ları yenile
+        self.last_token_refresh = 0
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.ping_thread = None
+        self.token_refresh_thread = None
+        
     def log_message(self, message):
         """Log mesajı"""
         logger.info(f"[WithdrawalListener] {message}")
+        
+    def start_ping_thread(self):
+        """Ping thread'ini başlat"""
+        if self.ping_thread and self.ping_thread.is_alive():
+            return
+            
+        def ping_loop():
+            while self.is_running and self.connected:
+                try:
+                    current_time = time.time()
+                    
+                    # Ping gönderme zamanı geldi mi?
+                    if current_time - self.last_ping_time >= self.ping_interval:
+                        if self.ws and self.connected:
+                            # SignalR ping mesajı gönder
+                            ping_message = json.dumps({"H": "commonnotificationhub", "M": "ping", "A": [], "I": int(current_time)})
+                            self.ws.send(ping_message)
+                            self.last_ping_time = current_time
+                            self.log_message(f"📡 Ping gönderildi: {current_time}")
+                    
+                    # Pong kontrolü - 60 saniye içinde pong gelmezse yeniden bağlan
+                    if (current_time - self.last_pong_time > 60 and 
+                        self.last_pong_time > 0 and 
+                        self.connected):
+                        self.log_message("⚠️ Pong timeout - yeniden bağlanılıyor...")
+                        self.reconnect()
+                    
+                    time.sleep(5)  # 5 saniyede bir kontrol et
+                    
+                except Exception as e:
+                    self.log_message(f"❌ Ping thread hatası: {str(e)}")
+                    time.sleep(10)
+        
+        self.ping_thread = threading.Thread(target=ping_loop, daemon=True)
+        self.ping_thread.start()
+        self.log_message("🏓 Ping thread başlatıldı")
+    
+    def start_token_refresh_thread(self):
+        """Token yenileme thread'ini başlat"""
+        if self.token_refresh_thread and self.token_refresh_thread.is_alive():
+            return
+            
+        def token_refresh_loop():
+            while self.is_running:
+                try:
+                    current_time = time.time()
+                    
+                    # Token yenileme zamanı geldi mi?
+                    if current_time - self.last_token_refresh >= self.token_refresh_interval:
+                        self.log_message("🔄 Token'lar yenileniyor...")
+                        
+                        # Yeni token'ları al
+                        if self.refresh_tokens():
+                            self.last_token_refresh = current_time
+                            self.log_message("✅ Token'lar başarıyla yenilendi")
+                            
+                            # Bağlantı varsa yeniden bağlan
+                            if self.connected:
+                                self.log_message("🔄 Yeni token'larla yeniden bağlanılıyor...")
+                                self.reconnect()
+                        else:
+                            self.log_message("❌ Token yenileme başarısız")
+                    
+                    time.sleep(30)  # 30 saniyede bir kontrol et
+                    
+                except Exception as e:
+                    self.log_message(f"❌ Token refresh thread hatası: {str(e)}")
+                    time.sleep(60)
+        
+        self.token_refresh_thread = threading.Thread(target=token_refresh_loop, daemon=True)
+        self.token_refresh_thread.start()
+        self.log_message("🔑 Token refresh thread başlatıldı")
+    
+    def refresh_tokens(self):
+        """Token'ları yenile"""
+        try:
+            # Negotiate işlemini tekrar yap
+            if self.negotiate_connection():
+                self.log_message("🔑 Connection token yenilendi")
+                return True
+            else:
+                self.log_message("❌ Token yenileme başarısız")
+                return False
+        except Exception as e:
+            self.log_message(f"❌ Token yenileme hatası: {str(e)}")
+            return False
+    
+    def reconnect(self):
+        """WebSocket bağlantısını yeniden kur"""
+        try:
+            if self.reconnect_attempts >= self.max_reconnect_attempts:
+                self.log_message(f"❌ Maksimum yeniden bağlanma denemesi aşıldı ({self.max_reconnect_attempts})")
+                return False
+            
+            self.reconnect_attempts += 1
+            self.log_message(f"🔄 Yeniden bağlanma denemesi {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+            
+            # Mevcut bağlantıyı kapat
+            if self.ws:
+                self.ws.close()
+                time.sleep(2)
+            
+            self.connected = False
+            
+            # Yeni bağlantı kur
+            if self.connect_signalr():
+                self.reconnect_attempts = 0  # Başarılı olursa sayacı sıfırla
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            self.log_message(f"❌ Yeniden bağlanma hatası: {str(e)}")
+            return False
         
     def negotiate_connection(self):
         """SignalR negotiate işlemi"""
@@ -202,6 +327,13 @@ class WithdrawalListener:
             # Boş mesajları atla ama log'la
             if message.strip() == '{}':
                 self.log_message("📭 Boş mesaj alındı (heartbeat)")
+                self.last_pong_time = time.time()  # Heartbeat'i pong olarak say
+                return
+            
+            # Pong mesajını yakala
+            if 'R' in data and 'I' in data:
+                self.last_pong_time = time.time()
+                self.log_message(f"🏓 Pong alındı: {data.get('I', 'unknown')}")
                 return
                 
             # TÜM mesajları logla (debug için)
@@ -445,19 +577,29 @@ class WithdrawalListener:
         
     def start(self):
         """Withdrawal listener'ı başlat"""
-        if self.is_running:
-            self.log_message("Withdrawal listener zaten çalışıyor")
-            return True
+        try:
+            self.log_message("Withdrawal listener başlatılıyor...")
+            self.is_running = True
+            self.last_token_refresh = time.time()  # İlk token refresh zamanını ayarla
+            self.last_pong_time = time.time()  # İlk pong zamanını ayarla
             
-        self.is_running = True
-        self.log_message("Withdrawal listener başlatılıyor...")
-        
+            if self.connect_signalr():
+                # Ping/Pong ve token refresh thread'lerini başlat
+                self.start_ping_thread()
+                self.start_token_refresh_thread()
+                
+                self.log_message("✅ Withdrawal listener başarıyla başlatıldı!")
+                self.log_message("🏓 Ping/Pong mekanizması aktif")
+                self.log_message("🔑 Otomatik token yenileme aktif")
+                return True
+            else:
+                self.log_message("❌ Withdrawal listener başlatılamadı!")
+                self.is_running = False
+                return False
+                
         def run_listener():
-            self.connect_signalr()
+            pass
             
-        threading.Thread(target=run_listener, daemon=True).start()
-        return True
-        
     def stop(self):
         """Withdrawal listener'ı durdur"""
         self.is_running = False

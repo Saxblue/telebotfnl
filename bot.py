@@ -49,465 +49,21 @@ class WithdrawalListener:
         self.base_url = "https://backofficewebadmin.betconstruct.com"
         
         self.withdrawal_notifications = []
-        self.deposit_notifications = []  # Yatırım bildirimleri için
         self.is_running = False
-        
-        # Ping/Pong ve token yenileme için
-        self.last_ping_time = 0
-        self.last_pong_time = 0
-        self.ping_interval = 30  # 30 saniyede bir ping gönder
-        self.token_refresh_interval = 300  # 5 dakikada bir token'ları yenile
-        self.last_token_refresh = 0
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
-        self.ping_thread = None
-        self.token_refresh_thread = None
-        
-        # Yatırım bildirimi için
-        self.deposit_check_interval = 60  # 60 saniyede bir yatırım kontrolü
-        self.last_deposit_check = 0
-        self.deposit_check_thread = None
-        self.last_processed_deposits = set()  # İşlenmiş yatırımları takip et
-        
-        # API key'i hub access token olarak kullan
-        self.api_key = self.hub_access_token
+
+        # Keepalive & reconnect
+        self.last_ws_msg_time = 0
+        self.reconnect_delay = 2
+        self._reconnect_timer = None
+        self._watchdog_thread = None
+        self._renew_timer = None
+        self.renew_interval_sec = 600  # 10 dakika
+        # Deposit detection (cache processed IDs to avoid duplicates)
+        self.processed_deposit_ids = set()
         
     def log_message(self, message):
         """Log mesajı"""
         logger.info(f"[WithdrawalListener] {message}")
-        
-    def start_ping_thread(self):
-        """Ping thread'ini başlat"""
-        if self.ping_thread and self.ping_thread.is_alive():
-            return
-            
-        def ping_loop():
-            while self.is_running and self.connected:
-                try:
-                    current_time = time.time()
-                    
-                    # Ping gönderme zamanı geldi mi?
-                    if current_time - self.last_ping_time >= self.ping_interval:
-                        if self.ws and self.connected:
-                            # SignalR ping mesajı gönder
-                            ping_message = json.dumps({"H": "commonnotificationhub", "M": "ping", "A": [], "I": int(current_time)})
-                            self.ws.send(ping_message)
-                            self.last_ping_time = current_time
-                            self.log_message(f"📡 Ping gönderildi: {current_time}")
-                    
-                    # Pong kontrolü - 60 saniye içinde pong gelmezse yeniden bağlan
-                    if (current_time - self.last_pong_time > 60 and 
-                        self.last_pong_time > 0 and 
-                        self.connected):
-                        self.log_message("⚠️ Pong timeout - yeniden bağlanılıyor...")
-                        self.reconnect()
-                    
-                    time.sleep(5)  # 5 saniyede bir kontrol et
-                    
-                except Exception as e:
-                    self.log_message(f"❌ Ping thread hatası: {str(e)}")
-                    time.sleep(10)
-        
-        self.ping_thread = threading.Thread(target=ping_loop, daemon=True)
-        self.ping_thread.start()
-        self.log_message("🏓 Ping thread başlatıldı")
-    
-    def start_token_refresh_thread(self):
-        """Token yenileme thread'ini başlat"""
-        if self.token_refresh_thread and self.token_refresh_thread.is_alive():
-            return
-            
-        def token_refresh_loop():
-            while self.is_running:
-                try:
-                    current_time = time.time()
-                    
-                    # Token yenileme zamanı geldi mi?
-                    if current_time - self.last_token_refresh >= self.token_refresh_interval:
-                        self.log_message("🔄 Token'lar yenileniyor...")
-                        
-                        # Yeni token'ları al
-                        if self.refresh_tokens():
-                            self.last_token_refresh = current_time
-                            self.log_message("✅ Token'lar başarıyla yenilendi")
-                            
-                            # Bağlantı varsa yeniden bağlan
-                            if self.connected:
-                                self.log_message("🔄 Yeni token'larla yeniden bağlanılıyor...")
-                                self.reconnect()
-                        else:
-                            self.log_message("❌ Token yenileme başarısız")
-                    
-                    time.sleep(30)  # 30 saniyede bir kontrol et
-                    
-                except Exception as e:
-                    self.log_message(f"❌ Token refresh thread hatası: {str(e)}")
-                    time.sleep(60)
-        
-        self.token_refresh_thread = threading.Thread(target=token_refresh_loop, daemon=True)
-        self.token_refresh_thread.start()
-        self.log_message("🔑 Token refresh thread başlatıldı")
-    
-    def start_deposit_check_thread(self):
-        """Yatırım kontrolü thread'ini başlat"""
-        if self.deposit_check_thread and self.deposit_check_thread.is_alive():
-            return
-            
-        def deposit_check_loop():
-            while self.is_running:
-                try:
-                    current_time = time.time()
-                    
-                    # Yatırım kontrolü zamanı geldi mi?
-                    if current_time - self.last_deposit_check >= self.deposit_check_interval:
-                        self.log_message("💰 Yeni yatırım talepleri kontrol ediliyor...")
-                        
-                        # Yeni yatırım taleplerini kontrol et
-                        self.check_deposit_requests()
-                        
-                        self.last_deposit_check = current_time
-                    
-                    time.sleep(10)  # 10 saniyede bir kontrol et
-                    
-                except Exception as e:
-                    self.log_message(f"❌ Deposit check thread hatası: {str(e)}")
-                    time.sleep(30)
-        
-        self.deposit_check_thread = threading.Thread(target=deposit_check_loop, daemon=True)
-        self.deposit_check_thread.start()
-        self.log_message("💰 Deposit check thread başlatıldı")
-    
-    def refresh_tokens(self):
-        """Token'ları yenile"""
-        try:
-            # Negotiate işlemini tekrar yap
-            if self.negotiate_connection():
-                self.log_message("🔑 Connection token yenilendi")
-                return True
-            else:
-                self.log_message("❌ Token yenileme başarısız")
-                return False
-        except Exception as e:
-            self.log_message(f"❌ Token yenileme hatası: {str(e)}")
-            return False
-    
-    def reconnect(self):
-        """WebSocket bağlantısını yeniden kur"""
-        try:
-            if self.reconnect_attempts >= self.max_reconnect_attempts:
-                self.log_message(f"❌ Maksimum yeniden bağlanma denemesi aşıldı ({self.max_reconnect_attempts})")
-                return False
-            
-            self.reconnect_attempts += 1
-            self.log_message(f"🔄 Yeniden bağlanma denemesi {self.reconnect_attempts}/{self.max_reconnect_attempts}")
-            
-            # Mevcut bağlantıyı kapat
-            if self.ws:
-                self.ws.close()
-                time.sleep(2)
-            
-            self.connected = False
-            
-            # Yeni bağlantı kur
-            if self.connect_signalr():
-                self.reconnect_attempts = 0  # Başarılı olursa sayacı sıfırla
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            self.log_message(f"❌ Yeniden bağlanma hatası: {str(e)}")
-            return False
-    
-    def check_deposit_requests(self):
-        """Yeni yatırım taleplerini kontrol et"""
-        try:
-            if not self.api_key:
-                self.log_message("❌ API key bulunamadı, yatırım kontrolü atlanıyor")
-                return
-            
-            self.log_message("🔍 Yatırım talepleri kontrol ediliyor...")
-            self.log_message(f"🔑 API Key: {self.api_key[:20]}..." if self.api_key else "❌ API Key yok!")
-            
-            # API çağrısı yap (doğru endpoint)
-            url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/GetClientDepositRequestsWithTotals"
-            headers = {
-                'Authentication': self.api_key,
-                'Content-Type': 'application/json;charset=UTF-8',
-                'Accept': 'application/json, text/plain, */*'
-            }
-            
-            # Bugünün tarihini doğru formatta al
-            today = datetime.now()
-            tomorrow = today + timedelta(days=1)
-            today_str = today.strftime("%d-%m-%y - 00:00:00")
-            tomorrow_str = tomorrow.strftime("%d-%m-%y - 00:00:00")
-            
-            payload = {
-                "ClientId": "",
-                "ClientLogin": "",
-                "CurrencyId": None,
-                "Email": "",
-                "FromDateLocal": today_str,
-                "Id": None,
-                "IsBonus": None,
-                "IsTest": "",
-                "PaymentTypeIds": [],
-                "RegionId": None,
-                "StateList": [],
-                "ToDateLocal": tomorrow_str
-            }
-            
-            self.log_message(f"📡 API çağrısı yapılıyor: {url}")
-            self.log_message(f"📅 Tarih aralığı: {today}")
-            self.log_message(f"📋 Payload: {payload}")
-            
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            
-            self.log_message(f"📊 API Response Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # API response formatını kontrol et
-                if data.get("HasError", True):
-                    self.log_message(f"❌ API Hatası: {data.get('AlertMessage', 'Bilinmeyen hata')}")
-                    return
-                
-                deposits = data.get("Data", {}).get("ClientRequests", [])
-                
-                self.log_message(f"📋 Toplam yatırım talebi sayısı: {len(deposits)}")
-                
-                if not deposits:
-                    self.log_message("ℹ️ Bugün yatırım talebi bulunamadı")
-                    return
-                
-                # İlk birkaç deposit'i log'la (debug için)
-                for i, deposit in enumerate(deposits[:3]):
-                    self.log_message(f"🔍 Deposit {i+1}: ID={deposit.get('Id')}, State={deposit.get('StateName')}, Client={deposit.get('ClientName')}")
-                
-                # Son kontrol zamanını güncelle
-                self.last_deposit_check = datetime.now().isoformat()
-                
-                # Yeni yatırım taleplerini bul
-                current_time = datetime.now()
-                new_deposits = []
-                yeni_state_count = 0
-                
-                for deposit in deposits:
-                    deposit_id = deposit.get("Id")
-                    request_time_str = deposit.get("RequestTime", "")
-                    state_name = deposit.get("StateName", "")
-                    
-                    # "Ödendi" durumundaki talepleri say (yeni yatırımlar bu durumda geliyor)
-                    if state_name == "Ödendi":
-                        yeni_state_count += 1
-                    
-                    # Sadece "Ödendi" durumundaki talepleri işle (yeni yatırımlar bu durumda)
-                    if state_name != "Ödendi":
-                        continue
-                    
-                    # Daha önce işlenmiş mi kontrol et
-                    if deposit_id in self.last_processed_deposits:
-                        self.log_message(f"⏭️ Deposit {deposit_id} daha önce işlenmiş, atlanıyor")
-                        continue
-                    
-                    # Son 10 dakikada mı kontrol et
-                    try:
-                        # ISO format: "2025-09-18T01:08:17.692+04:00"
-                        request_time = datetime.fromisoformat(request_time_str.replace('+04:00', ''))
-                        time_diff = (current_time - request_time).total_seconds()
-                        
-                        self.log_message(f"⏰ Deposit {deposit_id} zaman farkı: {time_diff:.0f} saniye")
-                        
-                        # Son 10 dakikada oluşturulmuş mu?
-                        if time_diff <= 600:  # 10 dakika = 600 saniye
-                            self.log_message(f"✅ Deposit {deposit_id} son 10 dakikada oluşturulmuş!")
-                            new_deposits.append(deposit)
-                            self.last_processed_deposits.add(deposit_id)
-                        else:
-                            self.log_message(f"⏳ Deposit {deposit_id} çok eski ({time_diff:.0f}s)")
-                            
-                    except Exception as e:
-                        self.log_message(f"⚠️ Tarih parse hatası: {str(e)}")
-                        continue
-                
-                self.log_message(f"📊 'Ödendi' durumunda toplam: {yeni_state_count}")
-                self.log_message(f"🆕 Son 10 dakikada yeni: {len(new_deposits)}")
-                
-                # Yeni yatırım taleplerini işle
-                if new_deposits:
-                    self.log_message(f"🚀 {len(new_deposits)} yeni yatırım talebi işleniyor!")
-                    for deposit in new_deposits:
-                        self.process_deposit_notification(deposit)
-                else:
-                    self.log_message("ℹ️ İşlenecek yeni yatırım talebi bulunamadı")
-                    
-            else:
-                self.log_message(f"❌ Yatırım API hatası: {response.status_code}")
-                self.log_message(f"📄 Response: {response.text[:500]}")
-                
-                # 401 Unauthorized ise token sorunu
-                if response.status_code == 401:
-                    self.log_message("🔑 Token sorunu tespit edildi! Hub access token geçersiz olabilir.")
-                
-        except Exception as e:
-            self.log_message(f"❌ Yatırım kontrolü hatası: {str(e)}")
-            import traceback
-            self.log_message(f"🔍 Detay: {traceback.format_exc()}")
-
-    def process_deposit_notification(self, deposit_data):
-        """Yatırım bildirimini işle ve Telegram'a gönder"""
-        try:
-            # Yatırım bilgilerini çıkar
-            client_name = deposit_data.get("ClientName", "")
-            client_login = deposit_data.get("ClientLogin", "")
-            amount = deposit_data.get("Amount", 0)
-            currency = deposit_data.get("CurrencyId", "TRY")
-            btag = deposit_data.get("BTag", "")
-            info = deposit_data.get("Info", "")
-            
-            # M.Notu'nu Info alanından çıkar
-            customer_note = ""
-            if info and ":" in info:
-                # "BANKA HAVALE MUSTERI NOTU:fast" -> "fast"
-                parts = info.split(":", 1)
-                if len(parts) > 1:
-                    customer_note = parts[1].strip()
-            
-            # Telegram mesajı oluştur (istenen şablon - kopyalanabilir format)
-            message = f"""🔔 Yeni yatırım talebi 🔔 
-👤 Müşteri: {client_name}
-🆔 Kullanıcı Adı: {client_login}
-💰 Miktar: {amount:,.2f} {currency}"""
-            
-            # M.Notu varsa ekle
-            if customer_note:
-                message += f"\n📝M.Notu: {customer_note}"
-            
-            # Telegram'a gönder
-            self.send_telegram_notification(message)
-            
-            # Bildirimi kaydet
-            notification_info = {
-                "type": "deposit",
-                "client_id": deposit_data.get("ClientId", ""),
-                "client_name": client_name,
-                "client_login": client_login,
-                "amount": amount,
-                "currency": currency,
-                "btag": btag,
-                "customer_note": customer_note,
-                "timestamp": datetime.now().isoformat(),
-                "message": message
-            }
-            
-            self.deposit_notifications.append(notification_info)
-            
-            # Son 100 bildirimi tut
-            if len(self.deposit_notifications) > 100:
-                self.deposit_notifications = self.deposit_notifications[-100:]
-            
-            self.log_message(f"💰 Yatırım bildirimi gönderildi: {client_name} - {amount} {currency}")
-            
-        except Exception as e:
-            self.log_message(f"❌ Yatırım bildirimi işleme hatası: {str(e)}")
-
-    def test_deposit_check(self):
-        """Test için yatırım kontrolünü manuel çağır"""
-        self.log_message("🧪 TEST: Manuel yatırım kontrolü başlatılıyor...")
-        try:
-            self.check_deposit_requests()
-            self.log_message("✅ TEST: Manuel yatırım kontrolü tamamlandı")
-        except Exception as e:
-            self.log_message(f"❌ TEST: Manuel yatırım kontrolü hatası: {str(e)}")
-
-    def start_deposit_check_thread(self):
-        """Yatırım kontrol thread'ini başlat"""
-        try:
-            if hasattr(self, 'deposit_check_thread') and self.deposit_check_thread and self.deposit_check_thread.is_alive():
-                self.log_message("⚠️ Yatırım kontrol thread'i zaten çalışıyor")
-                return
-            
-            self.deposit_check_thread = threading.Thread(target=self.deposit_check_loop, daemon=True)
-            self.deposit_check_thread.start()
-            self.log_message("🚀 Yatırım kontrol thread'i başlatıldı")
-            
-        except Exception as e:
-            self.log_message(f"❌ Yatırım kontrol thread başlatma hatası: {str(e)}")
-
-    def deposit_check_loop(self):
-        """Yatırım kontrol döngüsü (60 saniyede bir çalışır)"""
-        while self.is_running:
-            try:
-                self.check_deposit_requests()
-                time.sleep(60)  # 60 saniye bekle
-            except Exception as e:
-                self.log_message(f"❌ Yatırım kontrol döngüsü hatası: {str(e)}")
-                time.sleep(60)
-
-    def start_ping_thread(self):
-        """Ping thread'ini başlat"""
-        try:
-            if hasattr(self, 'ping_thread') and self.ping_thread and self.ping_thread.is_alive():
-                self.log_message("⚠️ Ping thread'i zaten çalışıyor")
-                return
-            
-            self.ping_thread = threading.Thread(target=self.ping_loop, daemon=True)
-            self.ping_thread.start()
-            self.log_message("🏓 Ping thread'i başlatıldı")
-            
-        except Exception as e:
-            self.log_message(f"❌ Ping thread başlatma hatası: {str(e)}")
-
-    def ping_loop(self):
-        """Ping döngüsü (30 saniyede bir ping gönderir)"""
-        while self.is_running and self.connected:
-            try:
-                time.sleep(30)  # 30 saniye bekle
-                if self.connected and self.ws:
-                    # Ping gönder
-                    ping_msg = {"H": "commonnotificationhub", "M": "Ping", "A": [], "I": 999}
-                    self.ws.send(json.dumps(ping_msg))
-                    self.log_message("🏓 Ping gönderildi")
-                    
-                    # Pong kontrolü (60 saniye timeout)
-                    time.sleep(60)
-                    if time.time() - self.last_pong_time > 90:  # 90 saniye pong gelmezse
-                        self.log_message("⚠️ Pong timeout! Yeniden bağlanma deneniyor...")
-                        self.reconnect()
-                        
-            except Exception as e:
-                self.log_message(f"❌ Ping döngüsü hatası: {str(e)}")
-                time.sleep(30)
-
-    def start_token_refresh_thread(self):
-        """Token yenileme thread'ini başlat"""
-        try:
-            if hasattr(self, 'token_refresh_thread') and self.token_refresh_thread and self.token_refresh_thread.is_alive():
-                self.log_message("⚠️ Token refresh thread'i zaten çalışıyor")
-                return
-            
-            self.token_refresh_thread = threading.Thread(target=self.token_refresh_loop, daemon=True)
-            self.token_refresh_thread.start()
-            self.log_message("🔑 Token refresh thread'i başlatıldı")
-            
-        except Exception as e:
-            self.log_message(f"❌ Token refresh thread başlatma hatası: {str(e)}")
-
-    def token_refresh_loop(self):
-        """Token yenileme döngüsü (5 dakikada bir token'ları yeniler)"""
-        while self.is_running:
-            try:
-                time.sleep(300)  # 5 dakika bekle
-                if self.is_running:
-                    self.log_message("🔄 Token'lar yenileniyor...")
-                    # Token'ları yenile (bu fonksiyon global token updater'dan çağrılacak)
-                    # Burada sadece log veriyoruz, gerçek yenileme external script'te
-                    
-            except Exception as e:
-                self.log_message(f"❌ Token refresh döngüsü hatası: {str(e)}")
-                time.sleep(300)
         
     def negotiate_connection(self):
         """SignalR negotiate işlemi"""
@@ -541,6 +97,10 @@ class WithdrawalListener:
         """SignalR bağlantısı kur"""
         try:
             self.log_message("SignalR bağlantısı kuruluyor...")
+            # Çalışma anında güncel env'den tokenları her bağlanmadan önce çek
+            self.hub_access_token = os.getenv('WITHDRAWAL_HUB_ACCESS_TOKEN', self.hub_access_token)
+            self.cookie = os.getenv('WITHDRAWAL_COOKIE', self.cookie)
+            self.subscribe_token = os.getenv('WITHDRAWAL_SUBSCRIBE_TOKEN', self.subscribe_token)
             
             if not self.negotiate_connection():
                 self.log_message("Negotiate hatası")
@@ -571,7 +131,8 @@ class WithdrawalListener:
             
             # Thread'de çalıştır
             def run_websocket():
-                self.ws.run_forever()
+                # ping/pong keepalive
+                self.ws.run_forever(ping_interval=30, ping_timeout=10)
                 
             threading.Thread(target=run_websocket, daemon=True).start()
             return True
@@ -584,8 +145,26 @@ class WithdrawalListener:
         """WebSocket açıldığında"""
         self.connected = True
         self.log_message("WebSocket bağlantısı kuruldu")
+        self.last_ws_msg_time = time.time()
+        self.reconnect_delay = 2
         
-        # Subscribe mesajı gönder - Browser'dan alınan doğru format
+        # SignalR start çağrısı (bazı sunucularda gerekli)
+        try:
+            start_url = f"{self.base_url}/signalr/start"
+            params = {
+                'hubAccessToken': self.hub_access_token,
+                'clientProtocol': '2.1'
+            }
+            headers = {
+                'Cookie': self.cookie,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            r = requests.get(start_url, params=params, headers=headers, timeout=10)
+            self.log_message(f"SignalR start yanıtı: {r.status_code}")
+        except Exception as e:
+            self.log_message(f"SignalR start hatası: {e}")
+
+        # Subscribe mesajı gönder - Browser'dan alınan doğru format (withdrawal kanalları)
         subscribe_data = []
         for sub_id in self.subscription_ids:
             subscribe_data.append({"Subscription": sub_id})
@@ -608,6 +187,25 @@ class WithdrawalListener:
         
         ws.send(subscribe_json)
         self.log_message("✅ Subscribe mesajı gönderildi - Browser formatı kullanıldı")
+
+        # Ek: Yatırım (deposit) kanalları için genişletilmiş abonelikler
+        try:
+            deposit_ids = [22, 23, 24, 32, 33, 34]
+            for i, did in enumerate(deposit_ids, start=1):
+                dep_msg = {
+                    "H": "commonnotificationhub",
+                    "M": "Subscribe",
+                    "A": [{
+                        "Data": [{"Subscription": did}],
+                        "Token": self.subscribe_token
+                    }],
+                    "I": 100 + i
+                }
+                ws.send(json.dumps(dep_msg))
+                self.log_message(f"📡 Yatırım subscription gönderildi (ID: {did})")
+                time.sleep(0.5)
+        except Exception as e:
+            self.log_message(f"Deposit abonelik hatası: {e}")
         
         # Alternatif subscription ID'leri de dene
         def try_alternative_subscriptions():
@@ -647,6 +245,14 @@ class WithdrawalListener:
                         time.sleep(1)
                         
         threading.Thread(target=try_alternative_subscriptions, daemon=True).start()
+
+        # Watchdog: belirli süre mesaj gelmezse otomatik yeniden bağlan
+        if not self._watchdog_thread or not self._watchdog_thread.is_alive():
+            self._watchdog_thread = threading.Thread(target=self._ws_watchdog, daemon=True)
+            self._watchdog_thread.start()
+
+        # Periyodik yenileme: connectionToken/token değişimleri için kontrollü yeniden bağlan
+        self._schedule_periodic_renew()
         
     def on_message(self, ws, message):
         """WebSocket mesajı geldiğinde"""
@@ -656,15 +262,10 @@ class WithdrawalListener:
             # Boş mesajları atla ama log'la
             if message.strip() == '{}':
                 self.log_message("📭 Boş mesaj alındı (heartbeat)")
-                self.last_pong_time = time.time()  # Heartbeat'i pong olarak say
                 return
             
-            # Pong mesajını yakala
-            if 'R' in data and 'I' in data:
-                self.last_pong_time = time.time()
-                self.log_message(f"🏓 Pong alındı: {data.get('I', 'unknown')}")
-                return
-                
+            self.last_ws_msg_time = time.time()
+            
             # TÜM mesajları logla (debug için)
             self.log_message(f"📨 Gelen mesaj: {message[:200]}{'...' if len(message) > 200 else ''}")
             
@@ -716,9 +317,17 @@ class WithdrawalListener:
                                             self.log_message("🎯 Çekim bildirimi tespit edildi!")
                                             withdrawal_data = notification_data['Object']
                                             self.process_withdrawal_notification(arg, withdrawal_data)
+                                        # Yatırım bildirimi: Object.Type == 2 (bonus Type==24 filtrele)
+                                        elif (
+                                            notification_data.get('Type') != 24 and
+                                            'Object' in notification_data and isinstance(notification_data['Object'], dict) and
+                                            notification_data['Object'].get('Type') == 2
+                                        ):
+                                            self.log_message("💰 Yatırım (deposit) bildirimi tespit edildi!")
+                                            self.process_deposit_notification(notification_data['Object'])
                                         else:
                                             self.log_message(f"ℹ️ Çekim bildirimi değil: Type={notification_data.get('Type')}, OpType={notification_data.get('OperationType')}")
-                                            
+                                        
                                     except Exception as e:
                                         self.log_message(f"❌ Notification parse hatası: {str(e)}")
                                         self.log_message(f"🔍 Ham arg: {str(arg)[:100]}...")
@@ -730,8 +339,13 @@ class WithdrawalListener:
                                         'Object' in arg):
                                         self.log_message("🎯 Dict formatında çekim bildirimi tespit edildi!")
                                         self.log_message("ℹ️ Dict format çift bildirim engellemek için işlenmiyor (String format tercih ediliyor)")
-                                        # withdrawal_data = arg['Object']
-                                        # self.process_withdrawal_notification(str(arg), withdrawal_data)
+                                    # Dict formatında deposit kontrolü
+                                    elif (
+                                        arg.get('Type') != 24 and 'Object' in arg and isinstance(arg['Object'], dict) and
+                                        arg['Object'].get('Type') == 2
+                                    ):
+                                        self.log_message("💰 Dict formatında yatırım bildirimi tespit edildi!")
+                                        self.process_deposit_notification(arg['Object'])
                     else:
                         self.log_message(f"📝 Diğer method: '{method}'")
             else:
@@ -740,6 +354,64 @@ class WithdrawalListener:
         except Exception as e:
             self.log_message(f"❌ Mesaj işleme hatası: {str(e)}")
             self.log_message(f"🔍 Ham mesaj: {message[:200]}...")
+
+    def process_deposit_notification(self, deposit_obj: dict):
+        """Yatırım (deposit) bildirimi işle ve Telegram'a gönder"""
+        try:
+            if not deposit_obj or not isinstance(deposit_obj, dict):
+                return
+            dep_id = deposit_obj.get('Id') or deposit_obj.get('TransactionId')
+            if dep_id and dep_id in self.processed_deposit_ids:
+                self.log_message(f"⚠️ LOCAL: Yatırım ID {dep_id} zaten işlendi, atlanıyor")
+                return
+
+            # Temel alanlar
+            amount = deposit_obj.get('Amount') or deposit_obj.get('amount') or 0
+            currency = deposit_obj.get('CurrencyId') or deposit_obj.get('Currency') or 'TRY'
+            client_name = f"{deposit_obj.get('ClientFirstName', '')} {deposit_obj.get('ClientLastName', '')}".strip() or deposit_obj.get('ClientName', 'N/A')
+            client_login = deposit_obj.get('ClientLogin', 'N/A')
+            payment_system = deposit_obj.get('PaymentSystemName', deposit_obj.get('PaymentSystem', 'N/A'))
+            btag = deposit_obj.get('BTag', 'N/A')
+            request_time = deposit_obj.get('RequestTimeLocal') or deposit_obj.get('CreateDate') or deposit_obj.get('RequestTime') or 'N/A'
+
+            # Telegram mesajı (Markdown)
+            try:
+                amt = float(amount)
+                amount_fmt = f"{amt:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+            except Exception:
+                amount_fmt = str(amount)
+
+            msg = (
+                "💰 **YENİ YATIRIM**\n\n"
+                f"👤 **Müşteri:** {client_name}\n"
+                f"🆔 **Kullanıcı Adı:** {client_login}\n"
+                f"💵 **Miktar:** {amount_fmt} {currency}\n"
+                f"🏦 **Ödeme Sistemi:** {payment_system}\n"
+                f"🏷️ **B. Tag:** {btag}\n"
+                f"🕐 **Zaman:** {request_time}"
+            )
+
+            # Telegram'a gönder
+            if self.bot_instance and getattr(self.bot_instance, 'application', None):
+                chat_ids = getattr(self, 'telegram_chat_ids', []) or getattr(self.bot_instance, 'telegram_chat_ids', [])
+                if not chat_ids:
+                    self.log_message("⚠️ Telegram chat ID yok, mesaj gönderilemedi")
+                else:
+                    for chat_id in chat_ids:
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.create_task(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown'))
+                            else:
+                                threading.Thread(target=lambda: asyncio.run(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')), daemon=True).start()
+                        except Exception as e:
+                            self.log_message(f"❌ Telegram gönderim hatası (deposit): {e}")
+
+            if dep_id:
+                self.processed_deposit_ids.add(dep_id)
+            self.log_message("✅ Yatırım bildirimi işlendi ve gönderildi")
+        except Exception as e:
+            self.log_message(f"❌ Yatırım bildirimi işleme hatası: {e}")
             
     def process_withdrawal_notification(self, raw_message, withdrawal_data):
         """Çekim bildirimini işle ve Telegram'a gönder"""
@@ -898,41 +570,30 @@ class WithdrawalListener:
     def on_error(self, ws, error):
         """WebSocket hatası"""
         self.log_message(f"WebSocket hatası: {str(error)}")
+        self.connected = False
+        self._schedule_reconnect()
         
     def on_close(self, ws, close_status_code, close_msg):
         """WebSocket kapandığında"""
         self.connected = False
         self.log_message("WebSocket bağlantısı kesildi")
+        self._schedule_reconnect()
         
     def start(self):
         """Withdrawal listener'ı başlat"""
-        try:
-            self.log_message("Withdrawal listener başlatılıyor...")
-            self.is_running = True
-            self.last_token_refresh = time.time()  # İlk token refresh zamanını ayarla
-            self.last_pong_time = time.time()  # İlk pong zamanını ayarla
+        if self.is_running:
+            self.log_message("Withdrawal listener zaten çalışıyor")
+            return True
             
-            if self.connect_signalr():
-                # Ping/Pong, token refresh ve deposit check thread'lerini başlat
-                self.start_ping_thread()
-                self.start_token_refresh_thread()
-                self.start_deposit_check_thread()
-                
-                self.log_message("✅ Withdrawal listener başarıyla başlatıldı!")
-                self.log_message("🏓 Ping/Pong mekanizması aktif")
-                self.log_message("🔑 Otomatik token yenileme aktif")
-                self.log_message("💰 Otomatik yatırım bildirimi aktif")
-                return True
-            else:
-                self.log_message("❌ Withdrawal listener başlatılamadı!")
-                self.is_running = False
-                return False
-                
-        except Exception as e:
-            self.log_message(f"❌ Withdrawal listener başlatma hatası: {str(e)}")
-            self.is_running = False
-            return False
+        self.is_running = True
+        self.log_message("Withdrawal listener başlatılıyor...")
+        
+        def run_listener():
+            self.connect_signalr()
             
+        threading.Thread(target=run_listener, daemon=True).start()
+        return True
+        
     def stop(self):
         """Withdrawal listener'ı durdur"""
         self.is_running = False
@@ -940,6 +601,70 @@ class WithdrawalListener:
         if self.ws:
             self.ws.close()
         self.log_message("Withdrawal listener durduruldu")
+        try:
+            if self._reconnect_timer and self._reconnect_timer.is_alive():
+                self._reconnect_timer.cancel()
+        except Exception:
+            pass
+        try:
+            if self._renew_timer and self._renew_timer.is_alive():
+                self._renew_timer.cancel()
+        except Exception:
+            pass
+
+    def _schedule_reconnect(self):
+        """Bağlantı koptuğunda yeniden bağlanmayı planla"""
+        if not self.is_running:
+            return
+        delay = self.reconnect_delay
+        self.reconnect_delay = min(self.reconnect_delay * 2, 60)
+        self.log_message(f"🔄 {delay}s sonra yeniden bağlanma denenecek")
+        def _do_reconnect():
+            if self.is_running and not self.connected:
+                self.connect_signalr()
+        if self._reconnect_timer and self._reconnect_timer.is_alive():
+            return
+        self._reconnect_timer = threading.Timer(delay, _do_reconnect)
+        self._reconnect_timer.daemon = True
+        self._reconnect_timer.start()
+
+    def _ws_watchdog(self):
+        """Belirli süre mesaj gelmezse yeniden bağlan"""
+        try:
+            while self.is_running:
+                now = time.time()
+                if self.connected and self.last_ws_msg_time and (now - self.last_ws_msg_time) > 45:
+                    self.log_message("⏱️ WS watchdog: 45s mesaj yok, yeniden bağlanılıyor...")
+                    try:
+                        if self.ws:
+                            self.ws.close()
+                    except Exception:
+                        pass
+                time.sleep(10)
+        except Exception:
+            pass
+
+    def _schedule_periodic_renew(self):
+        """Belirli aralıklarla kontrollü olarak bağlantıyı yenile (token tazeleme)"""
+        if not self.is_running:
+            return
+        try:
+            if self._renew_timer and self._renew_timer.is_alive():
+                self._renew_timer.cancel()
+        except Exception:
+            pass
+        def _do_renew():
+            # En güncel .env tokenlarını almak için bağlantıyı nazikçe kapat
+            if self.is_running and self.connected:
+                self.log_message("♻️ Periyodik yenileme: bağlantı yeniden kurulacak")
+                try:
+                    if self.ws:
+                        self.ws.close()
+                except Exception:
+                    pass
+        self._renew_timer = threading.Timer(self.renew_interval_sec, _do_renew)
+        self._renew_timer.daemon = True
+        self._renew_timer.start()
         
     def get_status(self):
         """Withdrawal listener durumunu al"""
@@ -2141,8 +1866,8 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 • `id 201190504` - Tek kullanıcı KPI'sı
 • `id 9470204, 9436169, 9220936` - Çoklu kullanıcı Excel raporu
 • `kadı johndoe` - Kullanıcı adıyla arama
-• `fraud 201190504` - Fraud raporu oluştur
-• `şifretc selimyunus01` - TC şifre değiştir
+• `/fraud 201190504` - Fraud raporu oluştur
+• `/şifretc selimyunus01` - TC şifre değiştir
 
 🔍 **Kullanıcı Adı Arama:**
 `kadı` komutu ile kullanıcı adına göre arama yapabilir ve detaylı bilgileri görüntüleyebilirsiniz.
@@ -2151,7 +1876,7 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 `fraud` komutu ile kullanıcı ID'sine göre detaylı fraud analizi raporu oluşturabilirsiniz.
 
 🔐 **TC Şifre Değiştirme:**
-`şifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
+`/şifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
 
 📊 **Excel Raporu:**
 Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
@@ -2178,7 +1903,7 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 • `fraud 201190504` - Detaylı fraud analizi raporu
 
 🔐 **TC Şifre Değiştirme:**
-• `şifretc selimyunus01` - Üye TC'si ile şifre değiştir
+• `/şifretc selimyunus01` - Üye TC'si ile şifre değiştir
 
 ❓ **Diğer Komutlar:**
 • `/start` - Bot'u başlat
@@ -2189,7 +1914,7 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 kadı testuser
 id 201190504
 fraud 201190504
-şifretc selimyunus01
+/şifretc selimyunus01
 ```
 
 💡 **İpuçları:**
@@ -2972,13 +2697,13 @@ Açıklama          : {turnover_analysis}"""
             return False
 
     async def tc_password_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """TC şifre değiştirme komutu: şifretc <üye_adı>"""
+        """TC şifre değiştirme komutu: /şifretc <üye_adı>"""
         try:
             # Komut argümanlarını kontrol et
             if not context.args:
                 await update.message.reply_text(
-                    "❌ Kullanım: şifretc <üye_adı>\n\n"
-                    "Örnek: şifretc selimyunus01"
+                    "❌ Kullanım: /şifretc <üye_adı>\n\n"
+                    "Örnek: /şifretc selimyunus01"
                 )
                 return
             
@@ -3332,7 +3057,7 @@ def get_withdrawal_listener_status():
     global bot_instance
     if bot_instance:
         return bot_instance.get_withdrawal_listener_status()
-    return {'is_running': False, 'is_connected': False, 'notifications_count': 0, 'last_check_time': None, 'processed_withdrawals_count': 0}
+    return {'is_running': False, 'is_connected': False, 'notifications_count': 0}
 
 def get_withdrawal_notifications(limit=10):
     """Global withdrawal bildirimleri alma fonksiyonu"""
@@ -3340,26 +3065,6 @@ def get_withdrawal_notifications(limit=10):
     if bot_instance:
         return bot_instance.get_withdrawal_notifications(limit)
     return []
-
-def get_deposit_notifications(limit=10):
-    """Global yatırım bildirimleri alma fonksiyonu"""
-    global bot_instance
-    if bot_instance and bot_instance.withdrawal_listener:
-        return bot_instance.withdrawal_listener.deposit_notifications[-limit:]
-    return []
-
-def get_deposit_listener_status():
-    """Global yatırım listener durum fonksiyonu"""
-    global bot_instance
-    if bot_instance and bot_instance.withdrawal_listener:
-        return {
-            'is_running': bot_instance.withdrawal_listener.is_running,
-            'deposit_check_active': bot_instance.withdrawal_listener.deposit_check_thread and bot_instance.withdrawal_listener.deposit_check_thread.is_alive(),
-            'notifications_count': len(bot_instance.withdrawal_listener.deposit_notifications),
-            'last_check_time': bot_instance.withdrawal_listener.last_deposit_check,
-            'processed_deposits_count': len(bot_instance.withdrawal_listener.last_processed_deposits)
-        }
-    return {'is_running': False, 'deposit_check_active': False, 'notifications_count': 0}
 
 def update_telegram_chat_ids(chat_ids_str):
     """Telegram chat ID'lerini güncelle"""

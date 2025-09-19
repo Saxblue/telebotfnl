@@ -2178,7 +2178,7 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 • `fraud 201190504` - Detaylı fraud analizi raporu
 
 🔐 **TC Şifre Değiştirme:**
-• `/şifretc selimyunus01` - Üye TC'si ile şifre değiştir
+• `şifretc selimyunus01` - Üye TC'si ile şifre değiştir
 
 ❓ **Diğer Komutlar:**
 • `/start` - Bot'u başlat
@@ -2189,7 +2189,7 @@ Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.
 kadı testuser
 id 201190504
 fraud 201190504
-/şifretc selimyunus01
+şifretc selimyunus01
 ```
 
 💡 **İpuçları:**
@@ -2972,13 +2972,13 @@ Açıklama          : {turnover_analysis}"""
             return False
 
     async def tc_password_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """TC şifre değiştirme komutu: /şifretc <üye_adı>"""
+        """TC şifre değiştirme komutu: şifretc <üye_adı>"""
         try:
             # Komut argümanlarını kontrol et
             if not context.args:
                 await update.message.reply_text(
-                    "❌ Kullanım: /şifretc <üye_adı>\n\n"
-                    "Örnek: /şifretc selimyunus01"
+                    "❌ Kullanım: şifretc <üye_adı>\n\n"
+                    "Örnek: şifretc selimyunus01"
                 )
                 return
             

@@ -483,25 +483,32 @@ class WithdrawalListener:
                     if iban_end == -1:
                         iban_end = iban_start + 26  # IBAN genellikle 26 karakter
                     iban = info[iban_start:iban_end]
-                    iban_info = f"🏦 **IBAN:** {iban}\n"
+                    iban_info = f"🏦 <b>IBAN:</b> {self._esc(iban)}\n"
                 except:
                     pass
             
             # Temiz format - fraud kontrolü için üye ID'si eklendi
             client_id = withdrawal_data.get('ClientId', 'N/A')
             btag = withdrawal_data.get('BTag', 'N/A')
-            telegram_message = f"""🚨 **YENİ ÇEKİM TALEBİ** 🚨
+            # HTML formatlı güvenli mesaj
+            try:
+                amt = float(amount)
+                amount_fmt = f"{amt:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+            except Exception:
+                amount_fmt = str(amount)
 
-👤 **Müşteri:** {client_name or account_holder}
-🆔 **Kullanıcı Adı:** {client_login}
-💰 **Miktar:** {amount:.2f} {currency}
-🏦 **Ödeme Sistemi:** {payment_system}
-🏷️ **B. Tag:** {btag}
-🕐 **Talep Zamanı:** {request_time}
-{iban_info}
-🆔 **Çekim ID:** {withdrawal_id}
-
-🔍 `fraud {client_id}`"""
+            msg_html = (
+                "🚨 <b>YENİ ÇEKİM TALEBİ</b> 🚨\n\n"
+                f"👤 <b>Müşteri:</b> {self._esc(client_name or account_holder)}\n"
+                f"🆔 <b>Kullanıcı Adı:</b> {self._esc(client_login)}\n"
+                f"💰 <b>Miktar:</b> {self._esc(amount_fmt)} {self._esc(currency)}\n"
+                f"🏦 <b>Ödeme Sistemi:</b> {self._esc(payment_system)}\n"
+                f"🏷️ <b>B. Tag:</b> {self._esc(btag)}\n"
+                f"🕐 <b>Talep Zamanı:</b> {self._esc(request_time)}\n"
+                f"{iban_info}"
+                f"🆔 <b>Çekim ID:</b> {self._esc(withdrawal_id)}\n\n"
+                f"🔎 <b>Hızlı Fraud:</b> /fraud{self._esc(client_id)}"
+            )
 
             # Withdrawal bildirimini kaydet
             notification_info = {
@@ -523,28 +530,27 @@ class WithdrawalListener:
             self.processed_withdrawal_ids.add(withdrawal_id)
             self.log_message(f"✅ Yeni çekim bildirimi kaydedildi: {client_name or account_holder} - {amount} {currency} (ID: {withdrawal_id})")
             
-            # Bot instance varsa Telegram'a gönder
-            if self.bot_instance:
-                # Async task'ı thread-safe şekilde çalıştır
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Event loop çalışıyorsa task oluştur
-                        asyncio.create_task(self.send_telegram_notification(telegram_message))
-                    else:
-                        # Event loop çalışmıyorsa yeni thread'de çalıştır
-                        threading.Thread(
-                            target=lambda: asyncio.run(self.send_telegram_notification(telegram_message)),
-                            daemon=True
-                        ).start()
-                except RuntimeError:
-                    # Event loop yoksa yeni thread'de çalıştır
-                    threading.Thread(
-                        target=lambda: asyncio.run(self.send_telegram_notification(telegram_message)),
-                        daemon=True
-                    ).start()
-                    
-                self.log_message("📤 Telegram bildirim gönderimi başlatıldı")
+            # Bot instance varsa Telegram'a HTML olarak gönder
+            if self.bot_instance and getattr(self.bot_instance, 'application', None):
+                chat_ids = getattr(self, 'telegram_chat_ids', []) or getattr(self.bot_instance, 'telegram_chat_ids', [])
+                if not chat_ids:
+                    self.log_message("⚠️ Telegram chat ID'leri yok, bildirim gönderilemedi")
+                else:
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            for chat_id in chat_ids:
+                                asyncio.create_task(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg_html, parse_mode='HTML'))
+                        else:
+                            def _send_all():
+                                async def _run():
+                                    for chat_id in chat_ids:
+                                        await self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg_html, parse_mode='HTML')
+                                asyncio.run(_run())
+                            threading.Thread(target=_send_all, daemon=True).start()
+                        self.log_message("📤 Telegram HTML çekim bildirimi gönderildi")
+                    except Exception as e:
+                        self.log_message(f"❌ Telegram HTML gönderim hatası: {e}")
                 
         except Exception as e:
             self.log_message(f"❌ Çekim bildirimi işleme hatası: {str(e)}")

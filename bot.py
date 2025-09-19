@@ -2141,8 +2141,8 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 • `id 201190504` - Tek kullanıcı KPI'sı
 • `id 9470204, 9436169, 9220936` - Çoklu kullanıcı Excel raporu
 • `kadı johndoe` - Kullanıcı adıyla arama
-• `/fraud 201190504` - Fraud raporu oluştur
-• `/şifretc selimyunus01` - TC şifre değiştir
+• `fraud 201190504` - Fraud raporu oluştur
+• `şifretc selimyunus01` - TC şifre değiştir
 
 🔍 **Kullanıcı Adı Arama:**
 `kadı` komutu ile kullanıcı adına göre arama yapabilir ve detaylı bilgileri görüntüleyebilirsiniz.
@@ -2151,7 +2151,7 @@ Bu bot, kullanıcı KPI verilerini çekmenize yardımcı olur.
 `fraud` komutu ile kullanıcı ID'sine göre detaylı fraud analizi raporu oluşturabilirsiniz.
 
 🔐 **TC Şifre Değiştirme:**
-`/şifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
+`şifretc` komutu ile üyenin TC numarasını yeni şifre olarak ayarlayabilirsiniz.
 
 📊 **Excel Raporu:**
 Birden fazla ID girdiğinizde otomatik olarak Excel raporu oluşturulur.

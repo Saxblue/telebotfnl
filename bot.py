@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from signalr_client import SignalRClientThread
 import websocket
 import urllib.parse
+import re
 
 # .env dosyasını güvenli şekilde yükle
 try:
@@ -728,9 +729,12 @@ class KPIBot:
         
         # Withdrawal Listener entegrasyonu
         self.withdrawal_listener = WithdrawalListener(bot_instance=self)
-        
-        # Telegram grup chat ID'leri - .env'den alınacak
+    
+    # Telegram grup chat ID'leri - .env'den alınacak
         self.telegram_chat_ids = self.load_telegram_chat_ids()
+        # Listener'a chat ID'lerini aktar
+        if self.withdrawal_listener:
+            self.withdrawal_listener.telegram_chat_ids = self.telegram_chat_ids
         
     def load_telegram_chat_ids(self):
         """Telegram grup chat ID'lerini .env'den yükle"""
@@ -1110,7 +1114,7 @@ class KPIBot:
             
             # Mevcut dosyayı al (SHA için)
             response = requests.get(url, headers=headers)
-            sha = None
+            
             if response.status_code == 200:
                 sha = response.json().get('sha')
             
@@ -1366,6 +1370,8 @@ class KPIBot:
         try:
             # İşlemleri getir (90 gün)
             url = "https://backofficewebadmin.betconstruct.com/api/tr/Client/GetClientTransactionsByAccount"
+            
+            # Headers
             headers = {
                 "authentication": self.api_settings.get("token", ""),
                 "Content-Type": "application/json;charset=UTF-8",
@@ -1374,10 +1380,11 @@ class KPIBot:
                 "Origin": "https://backoffice.betconstruct.com"
             }
             
-            from datetime import datetime, timedelta
+            # Date range - last 90 days
             date_to = datetime.now()
             date_from = date_to - timedelta(days=90)
             
+            # Payload
             payload = {
                 "StartTimeLocal": date_from.strftime("%d-%m-%y"),
                 "EndTimeLocal": date_to.strftime("%d-%m-%y"),
@@ -1388,7 +1395,6 @@ class KPIBot:
                 "GameId": None
             }
             
-            # Debug logging
             logger.info(f"TURNOVER DEBUG: URL: {url}")
             logger.info(f"TURNOVER DEBUG: Payload: {payload}")
             
@@ -1709,8 +1715,8 @@ class KPIBot:
                             # Debug: KPI yanıtını logla
                             logger.info(f"KPI Response for ID {user_id}: {kpi_data}")
                             
-                            kpi_dep_amt = kpi_data.get('DepositAmount') or kpi_data.get('TotalDeposit') or 0
-                            kpi_wd_amt = kpi_data.get('WithdrawalAmount') or kpi_data.get('TotalWithdrawal') or 0
+                            kpi_dep_amt = kpi_data.get('DepositAmount') or kpi_data.get('TotalDeposit', 0)
+                            kpi_wd_amt = kpi_data.get('WithdrawalAmount') or kpi_data.get('TotalWithdrawal', 0)
                             kpi_last_dep = (kpi_data.get('LastDepositTimeLocal') or 
                                           kpi_data.get('LastDepositTime') or 
                                           kpi_data.get('LastDepositDateLocal') or 
@@ -2384,24 +2390,31 @@ fraud 201190504
                 request_method = "Bilinmiyor"
                 logger.warning(f"DEBUG: No withdrawal request found for user {user_id}")
             
-            # Rapor formatı - tam format
-            report = f"""İsim Soyisim   : {full_name.strip()}
-K. Adı         : {username}
-Talep Miktarı  : {request_amount}
-Talep yöntemi  : {request_method}
-Yatırım Miktarı : {self.format_turkish_currency(last_deposit)}
-Oyun Türü      : {game_type}
-Arka Bakiye    : {self.format_turkish_currency(current_balance)}
-Oyuna Devam    : {game_status}
-
-T. Yatırım Miktarı: {self.format_turkish_currency(total_deposits)}
-T. Çekim Miktarı  : {self.format_turkish_currency(total_withdrawals)}
-T. Çekim Adedi    : {withdrawal_count}
-T. Yatırım Adedi  : {deposit_count}
-Açıklama          : {turnover_analysis}"""
+            # Kaynak türünü belirle
+            if base_type == 'Kayıp Bonusu':
+                kaynak = "Kayıp Bonusu"
+            elif base_type == 'Turnuva Kazancı':
+                kaynak = "Turnuva Kazancı"
+            else:
+                kaynak = "Ana Para"
             
-            return report
+            # Çevrim durumu
+            cevrim_durum = "Tamamlandı" if turnover_ratio >= 1 else "Tamamlanmadı"
             
+            # Açıklama metni oluştur
+            if bonus_info:
+                # Bonus varsa
+                if game_text:
+                    return f"{kaynak} ile ({base_amount:,.2f} TL) Aldığı {bonus_info['name']} ile ({bonus_info['amount']:,.2f} TL) {game_text} net kar elde edilmiştir. Çevrim: {turnover_ratio:.2f}x ({cevrim_durum})"
+                else:
+                    return f"{kaynak} ile ({base_amount:,.2f} TL) Aldığı {bonus_info['name']} ile ({bonus_info['amount']:,.2f} TL) toplam {net_profit:,.2f} TL net kar elde edilmiştir. Çevrim: {turnover_ratio:.2f}x ({cevrim_durum})"
+            else:
+                # Bonus yoksa
+                if game_text:
+                    return f"{kaynak} ile ({base_amount:,.2f} TL) {game_text} net kar elde edilmiştir. Çevrim: {turnover_ratio:.2f}x ({cevrim_durum})"
+                else:
+                    return f"{kaynak} ile ({base_amount:,.2f} TL) toplam {net_profit:,.2f} TL net kar elde edilmiştir. Çevrim: {turnover_ratio:.2f}x ({cevrim_durum})"
+                    
         except Exception as e:
             logger.error(f"Fraud report creation error: {e}")
             return None
@@ -2521,6 +2534,9 @@ Açıklama          : {turnover_analysis}"""
             self.application.add_handler(CommandHandler("help", self.help_command))
             self.application.add_handler(CommandHandler("withdrawals", self.withdrawals_command))
             self.application.add_handler(CommandHandler("signalr", self.signalr_status_command))
+            # Fraud komutları: '/fraud 123456' ve '/fraud123456'
+            self.application.add_handler(CommandHandler("fraud", self.fraud_command))
+            self.application.add_handler(MessageHandler(filters.Regex(r'^/fraud\d+$'), self.handle_fraud_slash_inline))
             self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
             self.application.add_handler(CallbackQueryHandler(self.kpi_query_callback, pattern="kpi_query"))
             

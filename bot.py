@@ -60,10 +60,19 @@ class WithdrawalListener:
         self.renew_interval_sec = 600  # 10 dakika
         # Deposit detection (cache processed IDs to avoid duplicates)
         self.processed_deposit_ids = set()
+        # Mesaj biçimi
+        self.use_html_format = True
         
     def log_message(self, message):
         """Log mesajı"""
         logger.info(f"[WithdrawalListener] {message}")
+
+    def _esc(self, s):
+        """HTML için güvenli kaçış"""
+        if s is None:
+            return ""
+        s = str(s)
+        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
     def negotiate_connection(self):
         """SignalR negotiate işlemi"""
@@ -381,14 +390,15 @@ class WithdrawalListener:
             except Exception:
                 amount_fmt = str(amount)
 
+            # HTML formatlı güvenli mesaj
             msg = (
-                "💰 **YENİ YATIRIM**\n\n"
-                f"👤 **Müşteri:** {client_name}\n"
-                f"🆔 **Kullanıcı Adı:** {client_login}\n"
-                f"💵 **Miktar:** {amount_fmt} {currency}\n"
-                f"🏦 **Ödeme Sistemi:** {payment_system}\n"
-                f"🏷️ **B. Tag:** {btag}\n"
-                f"🕐 **Zaman:** {request_time}"
+                "💰 <b>YENİ YATIRIM</b>\n\n"
+                f"👤 <b>Müşteri:</b> {self._esc(client_name)}\n"
+                f"🆔 <b>Kullanıcı Adı:</b> {self._esc(client_login)}\n"
+                f"💵 <b>Miktar:</b> {self._esc(amount_fmt)} {self._esc(currency)}\n"
+                f"🏦 <b>Ödeme Sistemi:</b> {self._esc(payment_system)}\n"
+                f"🏷️ <b>B. Tag:</b> {self._esc(btag)}\n"
+                f"🕐 <b>Zaman:</b> {self._esc(request_time)}"
             )
 
             # Telegram'a gönder
@@ -401,9 +411,9 @@ class WithdrawalListener:
                         try:
                             loop = asyncio.get_event_loop()
                             if loop.is_running():
-                                asyncio.create_task(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown'))
+                                asyncio.create_task(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML'))
                             else:
-                                threading.Thread(target=lambda: asyncio.run(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')), daemon=True).start()
+                                threading.Thread(target=lambda: asyncio.run(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')), daemon=True).start()
                         except Exception as e:
                             self.log_message(f"❌ Telegram gönderim hatası (deposit): {e}")
 
@@ -849,7 +859,54 @@ class KPIBot:
             
             for chat_id in admin_chat_ids:
                 try:
-                    # İlk bildirimi gönder
+                    # HTML formatlı Telegram bildirimi (çekim)
+                    if self.use_html_format:
+                        try:
+                            amount = withdrawal_info.get('Amount') or 0
+                            try:
+                                amt = float(amount)
+                                amount_fmt = f"{amt:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+                            except Exception:
+                                amount_fmt = str(amount)
+
+                            currency = withdrawal_info.get('CurrencyId') or 'TRY'
+                            client_name = withdrawal_info.get('ClientName') or f"{withdrawal_info.get('ClientFirstName','')} {withdrawal_info.get('ClientLastName','')}".strip()
+                            client_login = withdrawal_info.get('ClientLogin', '')
+                            payment_system = withdrawal_info.get('PaymentSystemName', 'N/A')
+                            request_time = withdrawal_info.get('RequestTimeLocal') or withdrawal_info.get('RequestTime') or 'N/A'
+                            btag = withdrawal_info.get('BTag', '')
+                            wid = withdrawal_info.get('Id')
+                            client_id = withdrawal_info.get('ClientId')
+
+                            msg_html = (
+                                "💸 <b>YENİ ÇEKİM TALEBİ</b>\n\n"
+                                f"👤 <b>Müşteri:</b> {self._esc(client_name)}\n"
+                                f"🆔 <b>Kullanıcı Adı:</b> {self._esc(client_login)}\n"
+                                f"💰 <b>Miktar:</b> {self._esc(amount_fmt)} {self._esc(currency)}\n"
+                                f"🏦 <b>Ödeme Sistemi:</b> {self._esc(payment_system)}\n"
+                                f"🏷️ <b>B. Tag:</b> {self._esc(btag)}\n"
+                                f"🕐 <b>Talep Zamanı:</b> {self._esc(request_time)}\n"
+                                f"🆔 <b>Çekim ID:</b> {self._esc(wid)}\n\n"
+                                f"🔎 <b>Hızlı Fraud:</b> /fraud{self._esc(client_id)}"
+                            )
+
+                            if self.bot_instance and getattr(self.bot_instance, 'application', None):
+                                chat_ids = getattr(self, 'telegram_chat_ids', []) or getattr(self.bot_instance, 'telegram_chat_ids', [])
+                                for chat_id in chat_ids:
+                                    try:
+                                        loop = asyncio.get_event_loop()
+                                        if loop.is_running():
+                                            asyncio.create_task(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg_html, parse_mode='HTML'))
+                                        else:
+                                            threading.Thread(target=lambda: asyncio.run(self.bot_instance.application.bot.send_message(chat_id=chat_id, text=msg_html, parse_mode='HTML')), daemon=True).start()
+                                    except Exception as e:
+                                        self.log_message(f"❌ Telegram gönderim hatası (withdrawal HTML): {e}")
+                                # HTML formatını biz gönderdik; mevcut alt akışta ikinci kez göndermemek için erken çık
+                                return
+                        except Exception as e:
+                            self.log_message(f"❌ Çekim HTML mesaj formatlama hatası: {e}")
+                    
+                    # Telegram bildirimini gönder (mevcut Markdown/varsayılan akış)
                     sent_message = await self.application.bot.send_message(
                         chat_id=chat_id,
                         text=alert_message,
